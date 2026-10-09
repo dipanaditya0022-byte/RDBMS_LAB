@@ -1,0 +1,757 @@
+-- Output of exp02_ecommerce_schema.sql
+
+-- Experiment 2: ER diagram to relational schema (e-commerce)
+
+--------------
+DROP DATABASE IF EXISTS ecommerce_db
+--------------
+
+Query OK, 15 rows affected (0.042 sec)
+
+--------------
+CREATE DATABASE ecommerce_db
+--------------
+
+Query OK, 1 row affected (0.000 sec)
+
+--------------
+USE ecommerce_db
+--------------
+
+Query OK, 0 rows affected (0.000 sec)
+
+-- PART A : CREATE TABLE statements
+-- Strong entity : CUSTOMER  (composite attribute name -> 3 columns)
+--------------
+CREATE TABLE customer (
+    customer_id   INT AUTO_INCREMENT PRIMARY KEY,
+    first_name    VARCHAR(40)  NOT NULL,
+    middle_name   VARCHAR(40),
+    last_name     VARCHAR(40)  NOT NULL,
+    email         VARCHAR(100) NOT NULL UNIQUE,
+    dob           DATE,
+    created_at    DATETIME     NOT NULL DEFAULT CURRENT_TIMESTAMP
+    -- age is a DERIVED attribute -> computed in queries, not stored
+)
+--------------
+
+Query OK, 0 rows affected (0.002 sec)
+
+-- Multi-valued attribute phone_no -> separate table
+--------------
+CREATE TABLE customer_phone (
+    customer_id INT         NOT NULL,
+    phone_no    VARCHAR(15) NOT NULL,
+    PRIMARY KEY (customer_id, phone_no),
+    CONSTRAINT fk_cphone_customer FOREIGN KEY (customer_id)
+        REFERENCES customer(customer_id) ON DELETE CASCADE
+)
+--------------
+
+Query OK, 0 rows affected (0.002 sec)
+
+-- Weak entity : ADDRESS (owner = CUSTOMER, partial key = address_no)
+--------------
+CREATE TABLE address (
+    customer_id  INT          NOT NULL,
+    address_no   TINYINT      NOT NULL,
+    house_no     VARCHAR(20)  NOT NULL,
+    street       VARCHAR(100) NOT NULL,
+    city         VARCHAR(50)  NOT NULL,
+    state        VARCHAR(50)  NOT NULL,
+    pincode      CHAR(6)      NOT NULL,
+    address_type ENUM('Home','Work','Other') NOT NULL DEFAULT 'Home',
+    PRIMARY KEY (customer_id, address_no),
+    CONSTRAINT chk_pincode CHECK (pincode REGEXP '^[1-9][0-9]{5}$'),
+    CONSTRAINT fk_address_customer FOREIGN KEY (customer_id)
+        REFERENCES customer(customer_id) ON DELETE CASCADE
+)
+--------------
+
+Query OK, 0 rows affected (0.002 sec)
+
+--------------
+CREATE TABLE seller (
+    seller_id     INT AUTO_INCREMENT PRIMARY KEY,
+    business_name VARCHAR(100) NOT NULL,
+    gstin         CHAR(15)     NOT NULL UNIQUE,
+    pan           CHAR(10)     NOT NULL UNIQUE,
+    rating        DECIMAL(2,1) CHECK (rating BETWEEN 0 AND 5)
+)
+--------------
+
+Query OK, 0 rows affected (0.002 sec)
+
+-- Multi-valued attribute contact_no of SELLER
+--------------
+CREATE TABLE seller_contact (
+    seller_id  INT         NOT NULL,
+    contact_no VARCHAR(15) NOT NULL,
+    PRIMARY KEY (seller_id, contact_no),
+    FOREIGN KEY (seller_id) REFERENCES seller(seller_id) ON DELETE CASCADE
+)
+--------------
+
+Query OK, 0 rows affected (0.002 sec)
+
+-- Recursive relationship SUBCATEGORY_OF -> self-referencing FK
+--------------
+CREATE TABLE category (
+    category_id   INT AUTO_INCREMENT PRIMARY KEY,
+    category_name VARCHAR(60) NOT NULL UNIQUE,
+    parent_id     INT NULL,
+    CONSTRAINT fk_category_parent FOREIGN KEY (parent_id)
+        REFERENCES category(category_id) ON DELETE SET NULL
+)
+--------------
+
+Query OK, 0 rows affected (0.002 sec)
+
+-- Superclass PRODUCT
+--------------
+CREATE TABLE product (
+    product_id    INT AUTO_INCREMENT PRIMARY KEY,
+    product_name  VARCHAR(120)  NOT NULL,
+    brand         VARCHAR(60),
+    mrp           DECIMAL(10,2) NOT NULL CHECK (mrp > 0),
+    selling_price DECIMAL(10,2) NOT NULL,
+    stock_qty     INT           NOT NULL DEFAULT 0 CHECK (stock_qty >= 0),
+    gst_rate      DECIMAL(4,2)  NOT NULL DEFAULT 18.00,
+    product_type  ENUM('Electronics','Clothing','Book','Other') NOT NULL,
+    seller_id     INT NOT NULL,          -- total participation in SELLS
+    category_id   INT NULL,              -- becomes NULL if category deleted
+    CONSTRAINT chk_price CHECK (selling_price <= mrp),
+    CONSTRAINT fk_product_seller FOREIGN KEY (seller_id)
+        REFERENCES seller(seller_id) ON DELETE CASCADE,
+    CONSTRAINT fk_product_category FOREIGN KEY (category_id)
+        REFERENCES category(category_id) ON DELETE SET NULL
+)
+--------------
+
+Query OK, 0 rows affected (0.003 sec)
+
+-- Specialization (disjoint): one table per subclass, PK = FK to superclass
+--------------
+CREATE TABLE electronics (
+    product_id      INT PRIMARY KEY,
+    warranty_months INT NOT NULL,
+    power_rating    VARCHAR(20),
+    FOREIGN KEY (product_id) REFERENCES product(product_id) ON DELETE CASCADE
+)
+--------------
+
+Query OK, 0 rows affected (0.002 sec)
+
+--------------
+CREATE TABLE clothing (
+    product_id INT PRIMARY KEY,
+    size       ENUM('XS','S','M','L','XL','XXL') NOT NULL,
+    fabric     VARCHAR(30),
+    gender     ENUM('Men','Women','Unisex','Kids') NOT NULL,
+    FOREIGN KEY (product_id) REFERENCES product(product_id) ON DELETE CASCADE
+)
+--------------
+
+Query OK, 0 rows affected (0.003 sec)
+
+--------------
+CREATE TABLE book (
+    product_id INT PRIMARY KEY,
+    isbn       CHAR(13) NOT NULL UNIQUE,
+    language   VARCHAR(30) NOT NULL,
+    FOREIGN KEY (product_id) REFERENCES product(product_id) ON DELETE CASCADE
+)
+--------------
+
+Query OK, 0 rows affected (0.003 sec)
+
+-- Multi-valued attribute author of BOOK
+--------------
+CREATE TABLE book_author (
+    product_id  INT NOT NULL,
+    author_name VARCHAR(80) NOT NULL,
+    PRIMARY KEY (product_id, author_name),
+    FOREIGN KEY (product_id) REFERENCES book(product_id) ON DELETE CASCADE
+)
+--------------
+
+Query OK, 0 rows affected (0.003 sec)
+
+-- ORDER (named orders because ORDER is a reserved word)
+--------------
+CREATE TABLE orders (
+    order_id         INT AUTO_INCREMENT PRIMARY KEY,
+    customer_id      INT NOT NULL,
+    ship_address_no  TINYINT NOT NULL,
+    order_date       DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    status           ENUM('Placed','Shipped','Delivered','Cancelled','Returned')
+                     NOT NULL DEFAULT 'Placed',
+    -- a customer who has orders must not be deleted (financial records)
+    CONSTRAINT fk_orders_customer FOREIGN KEY (customer_id)
+        REFERENCES customer(customer_id) ON DELETE RESTRICT,
+    -- SHIPS_TO : composite FK to the weak entity ADDRESS
+    CONSTRAINT fk_orders_address FOREIGN KEY (customer_id, ship_address_no)
+        REFERENCES address(customer_id, address_no) ON DELETE RESTRICT
+)
+--------------
+
+Query OK, 0 rows affected (0.003 sec)
+
+-- Weak entity ORDER_ITEM (owner = ORDERS, partial key = line_no)
+--------------
+CREATE TABLE order_item (
+    order_id   INT NOT NULL,
+    line_no    TINYINT NOT NULL,
+    product_id INT NULL,                   -- SET NULL keeps order history
+    quantity   INT NOT NULL CHECK (quantity > 0),
+    unit_price DECIMAL(10,2) NOT NULL,
+    discount   DECIMAL(10,2) NOT NULL DEFAULT 0,
+    PRIMARY KEY (order_id, line_no),
+    CONSTRAINT fk_item_order FOREIGN KEY (order_id)
+        REFERENCES orders(order_id) ON DELETE CASCADE,
+    CONSTRAINT fk_item_product FOREIGN KEY (product_id)
+        REFERENCES product(product_id) ON DELETE SET NULL
+)
+--------------
+
+Query OK, 0 rows affected (0.004 sec)
+
+--------------
+CREATE TABLE payment (
+    payment_id      INT AUTO_INCREMENT PRIMARY KEY,
+    order_id        INT NOT NULL,
+    method          ENUM('UPI','Card','NetBanking','COD','Wallet') NOT NULL,
+    amount          DECIMAL(10,2) NOT NULL CHECK (amount > 0),
+    paid_at         DATETIME,
+    transaction_ref VARCHAR(40) UNIQUE,
+    status          ENUM('Pending','Success','Failed','Refunded') NOT NULL,
+    CONSTRAINT fk_payment_order FOREIGN KEY (order_id)
+        REFERENCES orders(order_id) ON DELETE CASCADE
+)
+--------------
+
+Query OK, 0 rows affected (0.003 sec)
+
+-- 1:1 relationship SHIPPED_VIA -> UNIQUE foreign key
+--------------
+CREATE TABLE delivery (
+    delivery_id     INT AUTO_INCREMENT PRIMARY KEY,
+    order_id        INT NOT NULL UNIQUE,
+    courier_partner VARCHAR(40) NOT NULL,
+    awb_no          VARCHAR(20) NOT NULL UNIQUE,
+    shipped_on      DATE,
+    delivered_on    DATE,
+    status          ENUM('Pending','In Transit','Delivered','RTO') NOT NULL,
+    CONSTRAINT fk_delivery_order FOREIGN KEY (order_id)
+        REFERENCES orders(order_id) ON DELETE CASCADE,
+    CONSTRAINT chk_dates CHECK (delivered_on IS NULL OR delivered_on >= shipped_on)
+)
+--------------
+
+Query OK, 0 rows affected (0.003 sec)
+
+--------------
+SHOW TABLES
+--------------
+
++------------------------+
+| Tables_in_ecommerce_db |
++------------------------+
+| address                |
+| book                   |
+| book_author            |
+| category               |
+| clothing               |
+| customer               |
+| customer_phone         |
+| delivery               |
+| electronics            |
+| order_item             |
+| orders                 |
+| payment                |
+| product                |
+| seller                 |
+| seller_contact         |
++------------------------+
+15 rows in set (0.000 sec)
+
+-- PART B : Sample data
+--------------
+INSERT INTO customer (first_name, middle_name, last_name, email, dob) VALUES
+('Aarav',  NULL,     'Sharma', 'aarav.sharma@gmail.com', '1998-04-12'),
+('Diya',   'Rani',   'Patel',  'diya.patel@yahoo.in',    '2000-11-03'),
+('Kabir',  NULL,     'Singh',  'kabir.singh@outlook.com','1995-07-21'),
+('Ishaan', 'Kumar',  'Reddy',  'ishaan.reddy@gmail.com', '2001-01-30'),
+('Ananya', NULL,     'Iyer',   'ananya.iyer@gmail.com',  '1999-09-09')
+--------------
+
+Query OK, 5 rows affected (0.000 sec)
+Records: 5  Duplicates: 0  Warnings: 0
+
+--------------
+INSERT INTO customer_phone VALUES
+(1,'9876543210'),(1,'9123456780'),(2,'9988776655'),(3,'9001122334'),
+(4,'9812345678'),(4,'8800112233'),(5,'9090909090')
+--------------
+
+Query OK, 7 rows affected (0.000 sec)
+Records: 7  Duplicates: 0  Warnings: 0
+
+--------------
+INSERT INTO address VALUES
+(1,1,'B-204','Andheri East, MG Road','Mumbai','Maharashtra','400069','Home'),
+(1,2,'5th Floor','BKC Tower','Mumbai','Maharashtra','400051','Work'),
+(2,1,'12','Satellite Road','Ahmedabad','Gujarat','380015','Home'),
+(3,1,'H-45','Sector 18','Noida','Uttar Pradesh','201301','Home'),
+(4,1,'Plot 7','Jubilee Hills','Hyderabad','Telangana','500033','Home'),
+(5,1,'22/3','Koramangala 4th Block','Bengaluru','Karnataka','560034','Home')
+--------------
+
+Query OK, 6 rows affected (0.000 sec)
+Records: 6  Duplicates: 0  Warnings: 0
+
+--------------
+INSERT INTO seller (business_name, gstin, pan, rating) VALUES
+('TechBazaar Pvt Ltd',   '27AABCT1234F1Z5', 'AABCT1234F', 4.5),
+('Desi Threads',         '24AAFCD5678K1Z2', 'AAFCD5678K', 4.2),
+('Pustak Mahal Online',  '07AAGCP9012L1Z8', 'AAGCP9012L', 4.8)
+--------------
+
+Query OK, 3 rows affected (0.000 sec)
+Records: 3  Duplicates: 0  Warnings: 0
+
+--------------
+INSERT INTO seller_contact VALUES
+(1,'02240001111'),(1,'9820098200'),(2,'07926001234'),(3,'01123456789')
+--------------
+
+Query OK, 4 rows affected (0.000 sec)
+Records: 4  Duplicates: 0  Warnings: 0
+
+--------------
+INSERT INTO category (category_name, parent_id) VALUES
+('Electronics', NULL), ('Fashion', NULL), ('Books', NULL),
+('Mobiles', 1), ('Laptops', 1), ('Men Ethnic Wear', 2), ('Fiction', 3)
+--------------
+
+Query OK, 7 rows affected (0.001 sec)
+Records: 7  Duplicates: 0  Warnings: 0
+
+--------------
+INSERT INTO product (product_name, brand, mrp, selling_price, stock_qty, gst_rate, product_type, seller_id, category_id) VALUES
+('Redmi Note 13 5G (8GB/256GB)', 'Xiaomi', 20999, 17999, 50, 18, 'Electronics', 1, 4),
+('Lenovo IdeaPad Slim 3',        'Lenovo', 65990, 52990, 15, 18, 'Electronics', 1, 5),
+('Cotton Kurta Pyjama Set',      'Manyavar', 2999, 1899, 120, 5, 'Clothing',    2, 6),
+('Silk Nehru Jacket',            'Fabindia', 3499, 2799, 40,  12, 'Clothing',   2, 6),
+('The Guide',                    'Penguin',   399,  299, 200, 0,  'Book',       3, 7),
+('Malgudi Days',                 'Penguin',   350,  280, 150, 0,  'Book',       3, 7)
+--------------
+
+Query OK, 6 rows affected (0.000 sec)
+Records: 6  Duplicates: 0  Warnings: 0
+
+--------------
+INSERT INTO electronics VALUES (1, 12, '5000 mAh'), (2, 12, '65 W')
+--------------
+
+Query OK, 2 rows affected (0.000 sec)
+Records: 2  Duplicates: 0  Warnings: 0
+
+--------------
+INSERT INTO clothing    VALUES (3, 'L', 'Cotton', 'Men'), (4, 'M', 'Silk', 'Men')
+--------------
+
+Query OK, 2 rows affected (0.000 sec)
+Records: 2  Duplicates: 0  Warnings: 0
+
+--------------
+INSERT INTO book        VALUES (5, '9780143039648', 'English'), (6, '9780143031581', 'English')
+--------------
+
+Query OK, 2 rows affected (0.000 sec)
+Records: 2  Duplicates: 0  Warnings: 0
+
+--------------
+INSERT INTO book_author VALUES (5, 'R. K. Narayan'), (6, 'R. K. Narayan')
+--------------
+
+Query OK, 2 rows affected (0.000 sec)
+Records: 2  Duplicates: 0  Warnings: 0
+
+--------------
+INSERT INTO orders (customer_id, ship_address_no, order_date, status) VALUES
+(1, 1, '2025-10-01 10:15:00', 'Delivered'),
+(1, 2, '2025-10-05 18:40:00', 'Shipped'),
+(2, 1, '2025-10-06 09:05:00', 'Placed'),
+(3, 1, '2025-10-07 21:30:00', 'Delivered'),
+(5, 1, '2025-10-08 13:00:00', 'Cancelled')
+--------------
+
+Query OK, 5 rows affected (0.000 sec)
+Records: 5  Duplicates: 0  Warnings: 0
+
+--------------
+INSERT INTO order_item VALUES
+(1, 1, 1, 1, 17999, 500),
+(1, 2, 5, 2,   299,   0),
+(2, 1, 2, 1, 52990, 2000),
+(3, 1, 3, 2,  1899, 100),
+(3, 2, 4, 1,  2799,   0),
+(4, 1, 6, 3,   280,   0),
+(5, 1, 1, 1, 17999,   0)
+--------------
+
+Query OK, 7 rows affected (0.000 sec)
+Records: 7  Duplicates: 0  Warnings: 0
+
+--------------
+INSERT INTO payment (order_id, method, amount, paid_at, transaction_ref, status) VALUES
+(1, 'UPI',        18097, '2025-10-01 10:16:00', 'UPI2510011016AB', 'Success'),
+(2, 'Card',       50990, '2025-10-05 18:41:00', 'CRD2510051841XY', 'Success'),
+(3, 'COD',         6497, NULL,                  NULL,              'Pending'),
+(4, 'NetBanking',   840, '2025-10-07 21:31:00', 'NB25100721319Q',  'Success'),
+(5, 'UPI',        17999, '2025-10-08 13:01:00', 'UPI2510081301ZZ', 'Refunded')
+--------------
+
+Query OK, 5 rows affected (0.000 sec)
+Records: 5  Duplicates: 0  Warnings: 0
+
+--------------
+INSERT INTO delivery (order_id, courier_partner, awb_no, shipped_on, delivered_on, status) VALUES
+(1, 'Delhivery',     'DLV100200300', '2025-10-02', '2025-10-04', 'Delivered'),
+(2, 'Blue Dart',     'BD5566778899', '2025-10-06', NULL,         'In Transit'),
+(4, 'Ekart',         'EK9988776655', '2025-10-08', '2025-10-10', 'Delivered')
+--------------
+
+Query OK, 3 rows affected (0.000 sec)
+Records: 3  Duplicates: 0  Warnings: 0
+
+-- Verify the data
+--------------
+SELECT customer_id, CONCAT_WS(' ', first_name, middle_name, last_name) AS full_name,
+       email, TIMESTAMPDIFF(YEAR, dob, '2025-10-10') AS age_derived
+FROM customer
+--------------
+
++-------------+--------------------+-------------------------+-------------+
+| customer_id | full_name          | email                   | age_derived |
++-------------+--------------------+-------------------------+-------------+
+|           1 | Aarav Sharma       | aarav.sharma@gmail.com  |          27 |
+|           2 | Diya Rani Patel    | diya.patel@yahoo.in     |          24 |
+|           3 | Kabir Singh        | kabir.singh@outlook.com |          30 |
+|           4 | Ishaan Kumar Reddy | ishaan.reddy@gmail.com  |          24 |
+|           5 | Ananya Iyer        | ananya.iyer@gmail.com   |          26 |
++-------------+--------------------+-------------------------+-------------+
+5 rows in set (0.000 sec)
+
+--------------
+SELECT c.category_name, p.category_name AS parent_category
+FROM category c LEFT JOIN category p ON c.parent_id = p.category_id
+--------------
+
++-----------------+-----------------+
+| category_name   | parent_category |
++-----------------+-----------------+
+| Electronics     | NULL            |
+| Fashion         | NULL            |
+| Books           | NULL            |
+| Mobiles         | Electronics     |
+| Laptops         | Electronics     |
+| Men Ethnic Wear | Fashion         |
+| Fiction         | Books           |
++-----------------+-----------------+
+7 rows in set (0.000 sec)
+
+--------------
+SELECT o.order_id, CONCAT(c.first_name,' ',c.last_name) AS customer, a.city,
+       o.status, SUM(oi.quantity*oi.unit_price - oi.discount) AS order_total
+FROM orders o
+JOIN customer c   ON c.customer_id = o.customer_id
+JOIN address  a   ON a.customer_id = o.customer_id AND a.address_no = o.ship_address_no
+JOIN order_item oi ON oi.order_id = o.order_id
+GROUP BY o.order_id, customer, a.city, o.status
+--------------
+
++----------+--------------+-----------+-----------+-------------+
+| order_id | customer     | city      | status    | order_total |
++----------+--------------+-----------+-----------+-------------+
+|        1 | Aarav Sharma | Mumbai    | Delivered |    18097.00 |
+|        2 | Aarav Sharma | Mumbai    | Shipped   |    50990.00 |
+|        3 | Diya Patel   | Ahmedabad | Placed    |     6497.00 |
+|        4 | Kabir Singh  | Noida     | Delivered |      840.00 |
+|        5 | Ananya Iyer  | Bengaluru | Cancelled |    17999.00 |
++----------+--------------+-----------+-----------+-------------+
+5 rows in set (0.000 sec)
+
+-- PART C : Demonstrating integrity-constraint violations
+-- (all of these should give error)
+-- C1. FOREIGN KEY violation: customer 99 does not exist  -> ERROR 1452
+--------------
+INSERT INTO orders (customer_id, ship_address_no) VALUES (99, 1)
+--------------
+
+ERROR 1452 (23000) at line 274: Cannot add or update a child row: a foreign key constraint fails (`ecommerce_db`.`orders`, CONSTRAINT `fk_orders_address` FOREIGN KEY (`customer_id`, `ship_address_no`) REFERENCES `address` (`customer_id`, `address_no`) ON DELETE RESTRICT)
+
+-- C2. FOREIGN KEY violation on composite FK: customer 2 has no address_no 5 -> ERROR 1452
+--------------
+INSERT INTO orders (customer_id, ship_address_no) VALUES (2, 5)
+--------------
+
+ERROR 1452 (23000) at line 277: Cannot add or update a child row: a foreign key constraint fails (`ecommerce_db`.`orders`, CONSTRAINT `fk_orders_address` FOREIGN KEY (`customer_id`, `ship_address_no`) REFERENCES `address` (`customer_id`, `address_no`) ON DELETE RESTRICT)
+
+-- C3. UNIQUE violation: duplicate email -> ERROR 1062
+--------------
+INSERT INTO customer (first_name, last_name, email) VALUES ('Fake','User','aarav.sharma@gmail.com')
+--------------
+
+ERROR 1062 (23000) at line 280: Duplicate entry 'aarav.sharma@gmail.com' for key 'customer.email'
+
+-- C4. NOT NULL violation -> ERROR 1048
+--------------
+INSERT INTO customer (first_name, last_name, email) VALUES ('NoEmail','User', NULL)
+--------------
+
+ERROR 1048 (23000) at line 283: Column 'email' cannot be null
+
+-- C5. PRIMARY KEY violation on weak entity (same owner + partial key) -> ERROR 1062
+--------------
+INSERT INTO address VALUES (1,1,'X','Y','Pune','Maharashtra','411001','Other')
+--------------
+
+ERROR 1062 (23000) at line 286: Duplicate entry '1-1' for key 'address.PRIMARY'
+
+-- C6. CHECK violation: selling_price > mrp -> ERROR 3819
+--------------
+INSERT INTO product (product_name, mrp, selling_price, product_type, seller_id)
+VALUES ('Overpriced Cable', 100, 150, 'Electronics', 1)
+--------------
+
+ERROR 3819 (HY000) at line 289: Check constraint 'chk_price' is violated.
+
+-- C7. CHECK violation: invalid Indian pincode -> ERROR 3819
+--------------
+INSERT INTO address VALUES (3,2,'1','MG Road','Pune','Maharashtra','012345','Work')
+--------------
+
+ERROR 3819 (HY000) at line 293: Check constraint 'chk_pincode' is violated.
+
+-- C8. ON DELETE RESTRICT: address 1/1 is used by an order -> ERROR 1451
+--------------
+DELETE FROM address WHERE customer_id = 1 AND address_no = 1
+--------------
+
+ERROR 1451 (23000) at line 296: Cannot delete or update a parent row: a foreign key constraint fails (`ecommerce_db`.`orders`, CONSTRAINT `fk_orders_address` FOREIGN KEY (`customer_id`, `ship_address_no`) REFERENCES `address` (`customer_id`, `address_no`) ON DELETE RESTRICT)
+
+-- C9. Updating a parent key that is referenced -> ERROR 1451
+--------------
+UPDATE orders SET order_id = 500 WHERE order_id = 1
+--------------
+
+ERROR 1451 (23000) at line 299: Cannot delete or update a parent row: a foreign key constraint fails (`ecommerce_db`.`order_item`, CONSTRAINT `fk_item_order` FOREIGN KEY (`order_id`) REFERENCES `orders` (`order_id`) ON DELETE CASCADE)
+
+-- PART D : ON DELETE CASCADE and ON DELETE SET NULL in action
+-- D1. ON DELETE SET NULL : delete category 'Fiction' -> books lose their category
+--------------
+SELECT product_id, product_name, category_id FROM product WHERE product_type = 'Book'
+--------------
+
++------------+--------------+-------------+
+| product_id | product_name | category_id |
++------------+--------------+-------------+
+|          5 | The Guide    |           7 |
+|          6 | Malgudi Days |           7 |
++------------+--------------+-------------+
+2 rows in set (0.000 sec)
+
+--------------
+DELETE FROM category WHERE category_name = 'Fiction'
+--------------
+
+Query OK, 1 row affected (0.000 sec)
+
+--------------
+SELECT product_id, product_name, category_id FROM product WHERE product_type = 'Book'
+--------------
+
++------------+--------------+-------------+
+| product_id | product_name | category_id |
++------------+--------------+-------------+
+|          5 | The Guide    |        NULL |
+|          6 | Malgudi Days |        NULL |
++------------+--------------+-------------+
+2 rows in set (0.000 sec)
+
+-- D2. Self-referencing SET NULL : delete 'Fashion' -> 'Men Ethnic Wear' becomes top-level
+--------------
+DELETE FROM category WHERE category_name = 'Fashion'
+--------------
+
+Query OK, 1 row affected (0.000 sec)
+
+--------------
+SELECT * FROM category
+--------------
+
++-------------+-----------------+-----------+
+| category_id | category_name   | parent_id |
++-------------+-----------------+-----------+
+|           1 | Electronics     |      NULL |
+|           3 | Books           |      NULL |
+|           4 | Mobiles         |         1 |
+|           5 | Laptops         |         1 |
+|           6 | Men Ethnic Wear |      NULL |
++-------------+-----------------+-----------+
+5 rows in set (0.000 sec)
+
+-- D3. ON DELETE CASCADE + SET NULL chain : delete seller 2 (Desi Threads)
+--     product rows cascade away, clothing rows cascade away,
+--     order_item.product_id for those products becomes NULL (history kept)
+--------------
+SELECT 'before' AS stage, COUNT(*) AS products FROM product WHERE seller_id = 2
+--------------
+
++--------+----------+
+| stage  | products |
++--------+----------+
+| before |        2 |
++--------+----------+
+1 row in set (0.000 sec)
+
+--------------
+DELETE FROM seller WHERE seller_id = 2
+--------------
+
+Query OK, 1 row affected (0.000 sec)
+
+--------------
+SELECT 'after' AS stage, COUNT(*) AS products FROM product WHERE seller_id = 2
+--------------
+
++-------+----------+
+| stage | products |
++-------+----------+
+| after |        0 |
++-------+----------+
+1 row in set (0.000 sec)
+
+--------------
+SELECT * FROM clothing
+--------------
+
+Empty set (0.000 sec)
+
+--------------
+SELECT * FROM order_item WHERE order_id = 3
+--------------
+
++----------+---------+------------+----------+------------+----------+
+| order_id | line_no | product_id | quantity | unit_price | discount |
++----------+---------+------------+----------+------------+----------+
+|        3 |       1 |       NULL |        2 |    1899.00 |   100.00 |
+|        3 |       2 |       NULL |        1 |    2799.00 |     0.00 |
++----------+---------+------------+----------+------------+----------+
+2 rows in set (0.000 sec)
+
+-- D4. RESTRICT on orders.customer_id : customer 1 has orders -> ERROR 1451
+--------------
+DELETE FROM customer WHERE customer_id = 1
+--------------
+
+ERROR 1451 (23000) at line 322: Cannot delete or update a parent row: a foreign key constraint fails (`ecommerce_db`.`orders`, CONSTRAINT `fk_orders_address` FOREIGN KEY (`customer_id`, `ship_address_no`) REFERENCES `address` (`customer_id`, `address_no`) ON DELETE RESTRICT)
+
+-- D5. Multi-level ON DELETE CASCADE : delete order 1
+--     -> its order_items, payments and delivery are removed automatically
+--------------
+SELECT
+  (SELECT COUNT(*) FROM order_item WHERE order_id = 1) AS items,
+  (SELECT COUNT(*) FROM payment    WHERE order_id = 1) AS payments,
+  (SELECT COUNT(*) FROM delivery   WHERE order_id = 1) AS deliveries
+--------------
+
++-------+----------+------------+
+| items | payments | deliveries |
++-------+----------+------------+
+|     2 |        1 |          1 |
++-------+----------+------------+
+1 row in set (0.000 sec)
+
+--------------
+DELETE FROM orders WHERE order_id = 1
+--------------
+
+Query OK, 1 row affected (0.000 sec)
+
+--------------
+SELECT
+  (SELECT COUNT(*) FROM order_item WHERE order_id = 1) AS items,
+  (SELECT COUNT(*) FROM payment    WHERE order_id = 1) AS payments,
+  (SELECT COUNT(*) FROM delivery   WHERE order_id = 1) AS deliveries
+--------------
+
++-------+----------+------------+
+| items | payments | deliveries |
++-------+----------+------------+
+|     0 |        0 |          0 |
++-------+----------+------------+
+1 row in set (0.000 sec)
+
+-- D6. Customer 4 has no orders -> delete cascades to phones and addresses (weak entity)
+--------------
+SELECT (SELECT COUNT(*) FROM customer_phone WHERE customer_id = 4) AS phones,
+       (SELECT COUNT(*) FROM address        WHERE customer_id = 4) AS addresses
+--------------
+
++--------+-----------+
+| phones | addresses |
++--------+-----------+
+|      2 |         1 |
++--------+-----------+
+1 row in set (0.000 sec)
+
+--------------
+DELETE FROM customer WHERE customer_id = 4
+--------------
+
+Query OK, 1 row affected (0.000 sec)
+
+--------------
+SELECT (SELECT COUNT(*) FROM customer_phone WHERE customer_id = 4) AS phones,
+       (SELECT COUNT(*) FROM address        WHERE customer_id = 4) AS addresses
+--------------
+
++--------+-----------+
+| phones | addresses |
++--------+-----------+
+|      0 |         0 |
++--------+-----------+
+1 row in set (0.000 sec)
+
+-- Foreign keys defined in the schema (from the data dictionary)
+--------------
+SELECT TABLE_NAME, CONSTRAINT_NAME, REFERENCED_TABLE_NAME, DELETE_RULE
+FROM information_schema.REFERENTIAL_CONSTRAINTS
+WHERE CONSTRAINT_SCHEMA = 'ecommerce_db'
+ORDER BY TABLE_NAME
+--------------
+
++----------------+-----------------------+-----------------------+-------------+
+| TABLE_NAME     | CONSTRAINT_NAME       | REFERENCED_TABLE_NAME | DELETE_RULE |
++----------------+-----------------------+-----------------------+-------------+
+| address        | fk_address_customer   | customer              | CASCADE     |
+| book           | book_ibfk_1           | product               | CASCADE     |
+| book_author    | book_author_ibfk_1    | book                  | CASCADE     |
+| category       | fk_category_parent    | category              | SET NULL    |
+| clothing       | clothing_ibfk_1       | product               | CASCADE     |
+| customer_phone | fk_cphone_customer    | customer              | CASCADE     |
+| delivery       | fk_delivery_order     | orders                | CASCADE     |
+| electronics    | electronics_ibfk_1    | product               | CASCADE     |
+| order_item     | fk_item_order         | orders                | CASCADE     |
+| order_item     | fk_item_product       | product               | SET NULL    |
+| orders         | fk_orders_address     | address               | RESTRICT    |
+| orders         | fk_orders_customer    | customer              | RESTRICT    |
+| payment        | fk_payment_order      | orders                | CASCADE     |
+| product        | fk_product_category   | category              | SET NULL    |
+| product        | fk_product_seller     | seller                | CASCADE     |
+| seller_contact | seller_contact_ibfk_1 | seller                | CASCADE     |
++----------------+-----------------------+-----------------------+-------------+
+16 rows in set (0.000 sec)

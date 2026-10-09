@@ -1,0 +1,651 @@
+-- Output of exp08_session_B.sql (run concurrently with session A)
+
+-- Experiment 8 part 2: SESSION B
+
+-- run together with session A. wait_until(x) waits till x seconds from start
+--------------
+USE bank_db
+--------------
+
+Query OK, 0 rows affected (0.000 sec)
+
+--------------
+SET SESSION innodb_lock_wait_timeout = 10
+--------------
+
+Query OK, 0 rows affected (0.000 sec)
+
+-- SCENARIO 1 : DIRTY READ  (t = 0 .. 4)
+--------------
+CALL wait_until(1.5)
+--------------
+
+Query OK, 0 rows affected (4.561 sec)
+
+-- B1 (t=1.5): READ UNCOMMITTED sees A's uncommitted debit -> DIRTY READ
+--------------
+SET SESSION TRANSACTION ISOLATION LEVEL READ UNCOMMITTED
+--------------
+
+Query OK, 0 rows affected (0.000 sec)
+
+--------------
+SELECT t_now() AS t, @@transaction_isolation AS level, acc_no, balance
+FROM accounts WHERE acc_no = 'ACC101'
+--------------
+
++------+------------------+--------+----------+
+| t    | level            | acc_no | balance  |
++------+------------------+--------+----------+
+|  1.6 | READ-UNCOMMITTED | ACC101 | 30000.00 |
++------+------------------+--------+----------+
+1 row in set (0.001 sec)
+
+--------------
+CALL wait_until(2)
+--------------
+
+Query OK, 0 rows affected (0.492 sec)
+
+-- B2 (t=2): READ COMMITTED does not see uncommitted data -> no dirty read
+--------------
+SET SESSION TRANSACTION ISOLATION LEVEL READ COMMITTED
+--------------
+
+Query OK, 0 rows affected (0.000 sec)
+
+--------------
+SELECT t_now() AS t, @@transaction_isolation AS level, acc_no, balance
+FROM accounts WHERE acc_no = 'ACC101'
+--------------
+
++------+----------------+--------+----------+
+| t    | level          | acc_no | balance  |
++------+----------------+--------+----------+
+|  2.1 | READ-COMMITTED | ACC101 | 50000.00 |
++------+----------------+--------+----------+
+1 row in set (0.001 sec)
+
+--------------
+CALL wait_until(3.5)
+--------------
+
+Query OK, 0 rows affected (1.499 sec)
+
+-- B3 (t=3.5): after A's ROLLBACK, the 30000 that B read at t=1.5 never existed
+--------------
+SET SESSION TRANSACTION ISOLATION LEVEL READ UNCOMMITTED
+--------------
+
+Query OK, 0 rows affected (0.000 sec)
+
+--------------
+SELECT t_now() AS t, @@transaction_isolation AS level, acc_no, balance
+FROM accounts WHERE acc_no = 'ACC101'
+--------------
+
++------+------------------+--------+----------+
+| t    | level            | acc_no | balance  |
++------+------------------+--------+----------+
+|  3.6 | READ-UNCOMMITTED | ACC101 | 50000.00 |
++------+------------------+--------+----------+
+1 row in set (0.001 sec)
+
+-- SCENARIO 2 : NON-REPEATABLE READ  (t = 5 .. 11)
+--------------
+CALL wait_until(5)
+--------------
+
+Query OK, 0 rows affected (1.503 sec)
+
+-- B4 (t=5): READ COMMITTED transaction, first read
+--------------
+SET SESSION TRANSACTION ISOLATION LEVEL READ COMMITTED
+--------------
+
+Query OK, 0 rows affected (0.000 sec)
+
+--------------
+START TRANSACTION
+--------------
+
+Query OK, 0 rows affected (0.000 sec)
+
+--------------
+SELECT t_now() AS t, @@transaction_isolation AS level, acc_no, balance AS first_read
+FROM accounts WHERE acc_no = 'ACC102'
+--------------
+
++------+----------------+--------+------------+
+| t    | level          | acc_no | first_read |
++------+----------------+--------+------------+
+|  5.1 | READ-COMMITTED | ACC102 |   30000.00 |
++------+----------------+--------+------------+
+1 row in set (0.001 sec)
+
+--------------
+CALL wait_until(7)
+--------------
+
+Query OK, 0 rows affected (2.000 sec)
+
+-- B5 (t=7): same query, same transaction -> different value (NON-REPEATABLE READ)
+--------------
+SELECT t_now() AS t, @@transaction_isolation AS level, acc_no, balance AS second_read
+FROM accounts WHERE acc_no = 'ACC102'
+--------------
+
++------+----------------+--------+-------------+
+| t    | level          | acc_no | second_read |
++------+----------------+--------+-------------+
+|  7.1 | READ-COMMITTED | ACC102 |    35000.00 |
++------+----------------+--------+-------------+
+1 row in set (0.001 sec)
+
+--------------
+COMMIT
+--------------
+
+Query OK, 0 rows affected (0.000 sec)
+
+--------------
+CALL wait_until(8)
+--------------
+
+Query OK, 0 rows affected (1.000 sec)
+
+-- B6 (t=8): REPEATABLE READ transaction, first read
+--------------
+SET SESSION TRANSACTION ISOLATION LEVEL REPEATABLE READ
+--------------
+
+Query OK, 0 rows affected (0.000 sec)
+
+--------------
+START TRANSACTION
+--------------
+
+Query OK, 0 rows affected (0.000 sec)
+
+--------------
+SELECT t_now() AS t, @@transaction_isolation AS level, acc_no, balance AS first_read
+FROM accounts WHERE acc_no = 'ACC102'
+--------------
+
++------+-----------------+--------+------------+
+| t    | level           | acc_no | first_read |
++------+-----------------+--------+------------+
+|  8.1 | REPEATABLE-READ | ACC102 |   35000.00 |
++------+-----------------+--------+------------+
+1 row in set (0.001 sec)
+
+--------------
+CALL wait_until(10)
+--------------
+
+Query OK, 0 rows affected (1.996 sec)
+
+-- B7 (t=10): A committed +5000 at t=9 but B still sees its snapshot -> repeatable
+--------------
+SELECT t_now() AS t, @@transaction_isolation AS level, acc_no, balance AS second_read
+FROM accounts WHERE acc_no = 'ACC102'
+--------------
+
++------+-----------------+--------+-------------+
+| t    | level           | acc_no | second_read |
++------+-----------------+--------+-------------+
+| 10.1 | REPEATABLE-READ | ACC102 |    35000.00 |
++------+-----------------+--------+-------------+
+1 row in set (0.001 sec)
+
+--------------
+COMMIT
+--------------
+
+Query OK, 0 rows affected (0.000 sec)
+
+-- after COMMIT a new snapshot shows the latest value
+--------------
+SELECT t_now() AS t, acc_no, balance AS after_commit FROM accounts WHERE acc_no = 'ACC102'
+--------------
+
++------+--------+--------------+
+| t    | acc_no | after_commit |
++------+--------+--------------+
+| 10.1 | ACC102 |     40000.00 |
++------+--------+--------------+
+1 row in set (0.000 sec)
+
+-- SCENARIO 3 : PHANTOM READ  (t = 12 .. 18)
+--------------
+CALL wait_until(12)
+--------------
+
+Query OK, 0 rows affected (2.000 sec)
+
+-- B8 (t=12): READ COMMITTED - count accounts with balance >= 40000
+--------------
+SET SESSION TRANSACTION ISOLATION LEVEL READ COMMITTED
+--------------
+
+Query OK, 0 rows affected (0.000 sec)
+
+--------------
+START TRANSACTION
+--------------
+
+Query OK, 0 rows affected (0.000 sec)
+
+--------------
+SELECT t_now() AS t, @@transaction_isolation AS level,
+       COUNT(*) AS rich_accounts, SUM(balance) AS total
+FROM accounts WHERE balance >= 40000
+--------------
+
++------+----------------+---------------+-----------+
+| t    | level          | rich_accounts | total     |
++------+----------------+---------------+-----------+
+| 12.1 | READ-COMMITTED |             3 | 165000.00 |
++------+----------------+---------------+-----------+
+1 row in set (0.001 sec)
+
+--------------
+CALL wait_until(14)
+--------------
+
+Query OK, 0 rows affected (2.000 sec)
+
+-- B9 (t=14): same query -> a new row (ACC106) appears = PHANTOM
+--------------
+SELECT t_now() AS t, @@transaction_isolation AS level,
+       COUNT(*) AS rich_accounts, SUM(balance) AS total
+FROM accounts WHERE balance >= 40000
+--------------
+
++------+----------------+---------------+-----------+
+| t    | level          | rich_accounts | total     |
++------+----------------+---------------+-----------+
+| 14.1 | READ-COMMITTED |             4 | 255000.00 |
++------+----------------+---------------+-----------+
+1 row in set (0.001 sec)
+
+--------------
+COMMIT
+--------------
+
+Query OK, 0 rows affected (0.000 sec)
+
+--------------
+CALL wait_until(15)
+--------------
+
+Query OK, 0 rows affected (0.999 sec)
+
+-- B10 (t=15): REPEATABLE READ - first count
+--------------
+SET SESSION TRANSACTION ISOLATION LEVEL REPEATABLE READ
+--------------
+
+Query OK, 0 rows affected (0.000 sec)
+
+--------------
+START TRANSACTION
+--------------
+
+Query OK, 0 rows affected (0.000 sec)
+
+--------------
+SELECT t_now() AS t, @@transaction_isolation AS level,
+       COUNT(*) AS rich_accounts, SUM(balance) AS total
+FROM accounts WHERE balance >= 40000
+--------------
+
++------+-----------------+---------------+-----------+
+| t    | level           | rich_accounts | total     |
++------+-----------------+---------------+-----------+
+| 15.1 | REPEATABLE-READ |             4 | 255000.00 |
++------+-----------------+---------------+-----------+
+1 row in set (0.001 sec)
+
+--------------
+CALL wait_until(17)
+--------------
+
+Query OK, 0 rows affected (1.973 sec)
+
+-- B11 (t=17): A inserted ACC107 at t=16, but the snapshot shows no phantom
+--------------
+SELECT t_now() AS t, @@transaction_isolation AS level,
+       COUNT(*) AS rich_accounts, SUM(balance) AS total
+FROM accounts WHERE balance >= 40000
+--------------
+
++------+-----------------+---------------+-----------+
+| t    | level           | rich_accounts | total     |
++------+-----------------+---------------+-----------+
+| 17.0 | REPEATABLE-READ |             4 | 255000.00 |
++------+-----------------+---------------+-----------+
+1 row in set (0.001 sec)
+
+--------------
+COMMIT
+--------------
+
+Query OK, 0 rows affected (0.000 sec)
+
+--------------
+SELECT t_now() AS t, COUNT(*) AS rich_accounts_after_commit FROM accounts WHERE balance >= 40000
+--------------
+
++------+----------------------------+
+| t    | rich_accounts_after_commit |
++------+----------------------------+
+| 17.0 |                          5 |
++------+----------------------------+
+1 row in set (0.000 sec)
+
+-- SCENARIO 4 : LOST UPDATE  (t = 19 .. 23)
+--------------
+SET SESSION TRANSACTION ISOLATION LEVEL REPEATABLE READ
+--------------
+
+Query OK, 0 rows affected (0.000 sec)
+
+--------------
+CALL wait_until(20)
+--------------
+
+Query OK, 0 rows affected (3.015 sec)
+
+-- B12 (t=20): UPI credit of Rs 5,000 to ACC103 - read the balance
+--------------
+START TRANSACTION
+--------------
+
+Query OK, 0 rows affected (0.000 sec)
+
+--------------
+SELECT balance INTO @bal FROM accounts WHERE acc_no = 'ACC103'
+--------------
+
+Query OK, 1 row affected (0.000 sec)
+
+--------------
+SELECT t_now() AS t, @bal AS balance_read_by_B
+--------------
+
++------+-------------------+
+| t    | balance_read_by_B |
++------+-------------------+
+| 20.1 |          75000.00 |
++------+-------------------+
+1 row in set (0.000 sec)
+
+--------------
+CALL wait_until(22)
+--------------
+
+Query OK, 0 rows affected (1.990 sec)
+
+-- B13 (t=22): write back (read value + 5000) -> overwrites A's withdrawal
+--------------
+UPDATE accounts SET balance = @bal + 5000 WHERE acc_no = 'ACC103'
+--------------
+
+Query OK, 1 row affected (0.001 sec)
+Rows matched: 1  Changed: 1  Warnings: 0
+
+--------------
+COMMIT
+--------------
+
+Query OK, 0 rows affected (0.001 sec)
+
+--------------
+SELECT t_now() AS t, 'B wrote balance = 75000 + 5000 = 80000' AS event
+--------------
+
++------+----------------------------------------+
+| t    | event                                  |
++------+----------------------------------------+
+| 22.1 | B wrote balance = 75000 + 5000 = 80000 |
++------+----------------------------------------+
+1 row in set (0.000 sec)
+
+-- SCENARIO 4b : LOST UPDATE PREVENTED with SELECT ... FOR UPDATE (t = 24 .. 29)
+--------------
+CALL wait_until(25)
+--------------
+
+Query OK, 0 rows affected (2.998 sec)
+
+-- B14 (t=25): FOR UPDATE must wait for A's lock (released at t=26.5)
+--------------
+SELECT t_now() AS t, 'B requests lock on ACC103' AS event
+--------------
+
++------+---------------------------+
+| t    | event                     |
++------+---------------------------+
+| 25.1 | B requests lock on ACC103 |
++------+---------------------------+
+1 row in set (0.000 sec)
+
+--------------
+START TRANSACTION
+--------------
+
+Query OK, 0 rows affected (0.000 sec)
+
+--------------
+SELECT balance INTO @bal FROM accounts WHERE acc_no = 'ACC103' FOR UPDATE
+--------------
+
+Query OK, 1 row affected (1.510 sec)
+
+--------------
+SELECT t_now() AS t, @bal AS balance_read_by_B_after_wait
+--------------
+
++------+------------------------------+
+| t    | balance_read_by_B_after_wait |
++------+------------------------------+
+| 26.6 |                     65000.00 |
++------+------------------------------+
+1 row in set (0.000 sec)
+
+--------------
+UPDATE accounts SET balance = @bal + 5000 WHERE acc_no = 'ACC103'
+--------------
+
+Query OK, 1 row affected (0.000 sec)
+Rows matched: 1  Changed: 1  Warnings: 0
+
+--------------
+COMMIT
+--------------
+
+Query OK, 0 rows affected (0.000 sec)
+
+--------------
+SELECT t_now() AS t, 'B committed 65000 + 5000 = 70000' AS event
+--------------
+
++------+----------------------------------+
+| t    | event                            |
++------+----------------------------------+
+| 26.6 | B committed 65000 + 5000 = 70000 |
++------+----------------------------------+
+1 row in set (0.000 sec)
+
+-- SCENARIO 5 : SERIALIZABLE - readers block writers  (t = 30 .. 40)
+--------------
+CALL wait_until(30)
+--------------
+
+Query OK, 0 rows affected (3.505 sec)
+
+-- B15 (t=30): under SERIALIZABLE a plain SELECT takes a SHARED lock
+--------------
+SET SESSION TRANSACTION ISOLATION LEVEL SERIALIZABLE
+--------------
+
+Query OK, 0 rows affected (0.000 sec)
+
+--------------
+START TRANSACTION
+--------------
+
+Query OK, 0 rows affected (0.000 sec)
+
+--------------
+SELECT t_now() AS t, @@transaction_isolation AS level, acc_no, balance
+FROM accounts WHERE acc_no = 'ACC104'
+--------------
+
++------+--------------+--------+----------+
+| t    | level        | acc_no | balance  |
++------+--------------+--------+----------+
+| 30.1 | SERIALIZABLE | ACC104 | 20000.00 |
++------+--------------+--------+----------+
+1 row in set (0.001 sec)
+
+--------------
+CALL wait_until(33)
+--------------
+
+Query OK, 0 rows affected (2.999 sec)
+
+-- B16 (t=33): commit -> A's waiting UPDATE can proceed
+--------------
+COMMIT
+--------------
+
+Query OK, 0 rows affected (0.000 sec)
+
+--------------
+SELECT t_now() AS t, 'B committed (shared lock released)' AS event
+--------------
+
++------+------------------------------------+
+| t    | event                              |
++------+------------------------------------+
+| 33.1 | B committed (shared lock released) |
++------+------------------------------------+
+1 row in set (0.000 sec)
+
+--------------
+CALL wait_until(35)
+--------------
+
+Query OK, 0 rows affected (1.998 sec)
+
+-- B17 (t=35): hold the shared lock for 5 seconds this time
+--------------
+START TRANSACTION
+--------------
+
+Query OK, 0 rows affected (0.000 sec)
+
+--------------
+SELECT t_now() AS t, @@transaction_isolation AS level, acc_no, balance
+FROM accounts WHERE acc_no = 'ACC104'
+--------------
+
++------+--------------+--------+----------+
+| t    | level        | acc_no | balance  |
++------+--------------+--------+----------+
+| 35.1 | SERIALIZABLE | ACC104 | 21000.00 |
++------+--------------+--------+----------+
+1 row in set (0.001 sec)
+
+--------------
+CALL wait_until(40)
+--------------
+
+Query OK, 0 rows affected (5.000 sec)
+
+--------------
+COMMIT
+--------------
+
+Query OK, 0 rows affected (0.000 sec)
+
+--------------
+SELECT t_now() AS t, 'B committed' AS event
+--------------
+
++------+-------------+
+| t    | event       |
++------+-------------+
+| 40.1 | B committed |
++------+-------------+
+1 row in set (0.000 sec)
+
+-- SCENARIO 6 : DEADLOCK  (t = 42 .. 47)
+--------------
+SET SESSION TRANSACTION ISOLATION LEVEL REPEATABLE READ
+--------------
+
+Query OK, 0 rows affected (0.000 sec)
+
+--------------
+CALL wait_until(42.5)
+--------------
+
+Query OK, 0 rows affected (2.489 sec)
+
+-- B18 (t=42.5): lock ACC102 first
+--------------
+START TRANSACTION
+--------------
+
+Query OK, 0 rows affected (0.000 sec)
+
+--------------
+UPDATE accounts SET balance = balance - 100 WHERE acc_no = 'ACC102'
+--------------
+
+Query OK, 1 row affected (0.001 sec)
+Rows matched: 1  Changed: 1  Warnings: 0
+
+--------------
+SELECT t_now() AS t, 'B locked ACC102' AS event
+--------------
+
++------+-----------------+
+| t    | event           |
++------+-----------------+
+| 42.6 | B locked ACC102 |
++------+-----------------+
+1 row in set (0.000 sec)
+
+--------------
+CALL wait_until(44)
+--------------
+
+Query OK, 0 rows affected (1.508 sec)
+
+-- B19 (t=44): now needs ACC101 (held by A, and A waits for B) -> DEADLOCK
+--             mysql finds the deadlock and rolls back one transaction -> ERROR 1213
+--------------
+UPDATE accounts SET balance = balance + 100 WHERE acc_no = 'ACC101'
+--------------
+
+ERROR 1213 (40001) at line 144: Deadlock found when trying to get lock; try restarting transaction
+--------------
+SELECT t_now() AS t, 'B continues after deadlock' AS event
+--------------
+
++------+----------------------------+
+| t    | event                      |
++------+----------------------------+
+| 44.1 | B continues after deadlock |
++------+----------------------------+
+1 row in set (0.000 sec)
+
+--------------
+ROLLBACK
+--------------
+
+Query OK, 0 rows affected (0.000 sec)

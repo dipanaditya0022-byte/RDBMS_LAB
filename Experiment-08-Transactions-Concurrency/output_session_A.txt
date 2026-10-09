@@ -1,0 +1,513 @@
+-- Output of exp08_session_A.sql (run concurrently with session B)
+
+-- Experiment 8 part 2: SESSION A
+
+-- run together with session B. wait_until(x) waits till x seconds from start
+--------------
+USE bank_db
+--------------
+
+Query OK, 0 rows affected (0.000 sec)
+
+--------------
+SET SESSION TRANSACTION ISOLATION LEVEL REPEATABLE READ
+--------------
+
+Query OK, 0 rows affected (0.000 sec)
+
+--------------
+SET SESSION innodb_lock_wait_timeout = 3
+--------------
+
+Query OK, 0 rows affected (0.000 sec)
+
+-- SCENARIO 1 : DIRTY READ  (t = 0 .. 4)
+--------------
+CALL wait_until(0.5)
+--------------
+
+Query OK, 0 rows affected (3.490 sec)
+
+-- A1 (t=0.5): debit Rs 20,000 from ACC101 but do NOT commit yet
+--------------
+START TRANSACTION
+--------------
+
+Query OK, 0 rows affected (0.000 sec)
+
+--------------
+UPDATE accounts SET balance = balance - 20000 WHERE acc_no = 'ACC101'
+--------------
+
+Query OK, 1 row affected (0.001 sec)
+Rows matched: 1  Changed: 1  Warnings: 0
+
+--------------
+SELECT t_now() AS t, acc_no, balance AS balance_inside_A FROM accounts WHERE acc_no = 'ACC101'
+--------------
+
++------+--------+------------------+
+| t    | acc_no | balance_inside_A |
++------+--------+------------------+
+|  0.5 | ACC101 |         30000.00 |
++------+--------+------------------+
+1 row in set (0.001 sec)
+
+--------------
+CALL wait_until(3)
+--------------
+
+Query OK, 0 rows affected (2.570 sec)
+
+-- A2 (t=3): the debit is cancelled
+--------------
+ROLLBACK
+--------------
+
+Query OK, 0 rows affected (0.001 sec)
+
+--------------
+SELECT t_now() AS t, 'A rolled back' AS event
+--------------
+
++------+---------------+
+| t    | event         |
++------+---------------+
+|  3.1 | A rolled back |
++------+---------------+
+1 row in set (0.000 sec)
+
+-- SCENARIO 2 : NON-REPEATABLE READ  (t = 5 .. 11)
+--------------
+CALL wait_until(6)
+--------------
+
+Query OK, 0 rows affected (2.988 sec)
+
+-- A3 (t=6): deposit Rs 5,000 into ACC102 and COMMIT (autocommit)
+--------------
+UPDATE accounts SET balance = balance + 5000 WHERE acc_no = 'ACC102'
+--------------
+
+Query OK, 1 row affected (0.001 sec)
+Rows matched: 1  Changed: 1  Warnings: 0
+
+--------------
+SELECT t_now() AS t, 'A committed +5000 to ACC102' AS event
+--------------
+
++------+-----------------------------+
+| t    | event                       |
++------+-----------------------------+
+|  6.1 | A committed +5000 to ACC102 |
++------+-----------------------------+
+1 row in set (0.000 sec)
+
+--------------
+CALL wait_until(9)
+--------------
+
+Query OK, 0 rows affected (3.002 sec)
+
+-- A4 (t=9): another committed deposit of Rs 5,000
+--------------
+UPDATE accounts SET balance = balance + 5000 WHERE acc_no = 'ACC102'
+--------------
+
+Query OK, 1 row affected (0.001 sec)
+Rows matched: 1  Changed: 1  Warnings: 0
+
+--------------
+SELECT t_now() AS t, 'A committed +5000 to ACC102' AS event
+--------------
+
++------+-----------------------------+
+| t    | event                       |
++------+-----------------------------+
+|  9.1 | A committed +5000 to ACC102 |
++------+-----------------------------+
+1 row in set (0.000 sec)
+
+-- SCENARIO 3 : PHANTOM READ  (t = 12 .. 18)
+--------------
+CALL wait_until(13)
+--------------
+
+Query OK, 0 rows affected (4.003 sec)
+
+-- A5 (t=13): a new rich customer opens an account (committed)
+--------------
+INSERT INTO accounts VALUES ('ACC106', 'Ananya Iyer', 'Bengaluru - Koramangala', 90000, 'ACTIVE')
+--------------
+
+Query OK, 1 row affected (0.001 sec)
+
+--------------
+SELECT t_now() AS t, 'A inserted ACC106 (90000)' AS event
+--------------
+
++------+---------------------------+
+| t    | event                     |
++------+---------------------------+
+| 13.1 | A inserted ACC106 (90000) |
++------+---------------------------+
+1 row in set (0.000 sec)
+
+--------------
+CALL wait_until(16)
+--------------
+
+Query OK, 0 rows affected (2.998 sec)
+
+-- A6 (t=16): another new account (committed)
+--------------
+INSERT INTO accounts VALUES ('ACC107', 'Rohan Gupta', 'Delhi - CP', 60000, 'ACTIVE')
+--------------
+
+Query OK, 1 row affected (0.001 sec)
+
+--------------
+SELECT t_now() AS t, 'A inserted ACC107 (60000)' AS event
+--------------
+
++------+---------------------------+
+| t    | event                     |
++------+---------------------------+
+| 16.1 | A inserted ACC107 (60000) |
++------+---------------------------+
+1 row in set (0.000 sec)
+
+-- SCENARIO 4 : LOST UPDATE  (t = 19 .. 23)  read-modify-write without locks
+--------------
+CALL wait_until(19.5)
+--------------
+
+Query OK, 0 rows affected (3.495 sec)
+
+-- A7 (t=19.5): ATM withdrawal of Rs 10,000 from ACC103 - read the balance
+--------------
+START TRANSACTION
+--------------
+
+Query OK, 0 rows affected (0.000 sec)
+
+--------------
+SELECT balance INTO @bal FROM accounts WHERE acc_no = 'ACC103'
+--------------
+
+Query OK, 1 row affected (0.000 sec)
+
+--------------
+SELECT t_now() AS t, @bal AS balance_read_by_A
+--------------
+
++------+-------------------+
+| t    | balance_read_by_A |
++------+-------------------+
+| 19.6 |          75000.00 |
++------+-------------------+
+1 row in set (0.000 sec)
+
+--------------
+CALL wait_until(21)
+--------------
+
+Query OK, 0 rows affected (1.503 sec)
+
+-- A8 (t=21): write back (read value - 10000) and commit
+--------------
+UPDATE accounts SET balance = @bal - 10000 WHERE acc_no = 'ACC103'
+--------------
+
+Query OK, 1 row affected (0.001 sec)
+Rows matched: 1  Changed: 1  Warnings: 0
+
+--------------
+COMMIT
+--------------
+
+Query OK, 0 rows affected (0.001 sec)
+
+--------------
+SELECT t_now() AS t, 'A wrote balance = 75000 - 10000 = 65000' AS event
+--------------
+
++------+-----------------------------------------+
+| t    | event                                   |
++------+-----------------------------------------+
+| 21.1 | A wrote balance = 75000 - 10000 = 65000 |
++------+-----------------------------------------+
+1 row in set (0.000 sec)
+
+--------------
+CALL wait_until(23)
+--------------
+
+Query OK, 0 rows affected (1.988 sec)
+
+-- A9 (t=23): final balance - expected 75000 - 10000 + 5000 = 70000
+--------------
+SELECT t_now() AS t, acc_no, balance AS final_balance,
+       IF(balance = 70000, 'CORRECT', 'LOST UPDATE!') AS verdict
+FROM accounts WHERE acc_no = 'ACC103'
+--------------
+
++------+--------+---------------+--------------+
+| t    | acc_no | final_balance | verdict      |
++------+--------+---------------+--------------+
+| 23.1 | ACC103 |      80000.00 | LOST UPDATE! |
++------+--------+---------------+--------------+
+1 row in set (0.001 sec)
+
+-- SCENARIO 4b : LOST UPDATE PREVENTED with SELECT ... FOR UPDATE (t = 24 .. 29)
+--------------
+CALL wait_until(24)
+--------------
+
+Query OK, 0 rows affected (1.005 sec)
+
+--------------
+UPDATE accounts SET balance = 75000 WHERE acc_no = 'ACC103'      -- reset
+--------------
+
+Query OK, 1 row affected (0.001 sec)
+Rows matched: 1  Changed: 1  Warnings: 0
+
+--------------
+CALL wait_until(24.5)
+--------------
+
+Query OK, 0 rows affected (0.474 sec)
+
+-- A10 (t=24.5): read WITH an exclusive row lock
+--------------
+START TRANSACTION
+--------------
+
+Query OK, 0 rows affected (0.000 sec)
+
+--------------
+SELECT balance INTO @bal FROM accounts WHERE acc_no = 'ACC103' FOR UPDATE
+--------------
+
+Query OK, 1 row affected (0.000 sec)
+
+--------------
+SELECT t_now() AS t, @bal AS balance_read_by_A_for_update
+--------------
+
++------+------------------------------+
+| t    | balance_read_by_A_for_update |
++------+------------------------------+
+| 24.5 |                     75000.00 |
++------+------------------------------+
+1 row in set (0.000 sec)
+
+--------------
+CALL wait_until(26.5)
+--------------
+
+Query OK, 0 rows affected (2.019 sec)
+
+-- A11 (t=26.5): write and commit -> releases the lock, B can continue
+--------------
+UPDATE accounts SET balance = @bal - 10000 WHERE acc_no = 'ACC103'
+--------------
+
+Query OK, 1 row affected (0.001 sec)
+Rows matched: 1  Changed: 1  Warnings: 0
+
+--------------
+COMMIT
+--------------
+
+Query OK, 0 rows affected (0.001 sec)
+
+--------------
+SELECT t_now() AS t, 'A committed 65000, lock released' AS event
+--------------
+
++------+----------------------------------+
+| t    | event                            |
++------+----------------------------------+
+| 26.6 | A committed 65000, lock released |
++------+----------------------------------+
+1 row in set (0.000 sec)
+
+--------------
+CALL wait_until(28.5)
+--------------
+
+Query OK, 0 rows affected (1.999 sec)
+
+--------------
+SELECT t_now() AS t, acc_no, balance AS final_balance,
+       IF(balance = 70000, 'CORRECT', 'LOST UPDATE!') AS verdict
+FROM accounts WHERE acc_no = 'ACC103'
+--------------
+
++------+--------+---------------+---------+
+| t    | acc_no | final_balance | verdict |
++------+--------+---------------+---------+
+| 28.6 | ACC103 |      70000.00 | CORRECT |
++------+--------+---------------+---------+
+1 row in set (0.001 sec)
+
+-- SCENARIO 5 : SERIALIZABLE - readers block writers  (t = 30 .. 40)
+--------------
+CALL wait_until(31)
+--------------
+
+Query OK, 0 rows affected (2.503 sec)
+
+-- A12 (t=31): try to update ACC104 that B has read under SERIALIZABLE
+--             -> A WAITS until B commits at t=33
+--------------
+SELECT t_now() AS t, 'A starts UPDATE on ACC104' AS event
+--------------
+
++------+---------------------------+
+| t    | event                     |
++------+---------------------------+
+| 31.1 | A starts UPDATE on ACC104 |
++------+---------------------------+
+1 row in set (0.000 sec)
+
+--------------
+UPDATE accounts SET balance = balance + 1000 WHERE acc_no = 'ACC104'
+--------------
+
+Query OK, 1 row affected (2.004 sec)
+Rows matched: 1  Changed: 1  Warnings: 0
+
+--------------
+SELECT t_now() AS t, 'A UPDATE finished (was blocked until B committed)' AS event
+--------------
+
++------+---------------------------------------------------+
+| t    | event                                             |
++------+---------------------------------------------------+
+| 33.1 | A UPDATE finished (was blocked until B committed) |
++------+---------------------------------------------------+
+1 row in set (0.000 sec)
+
+--------------
+CALL wait_until(36)
+--------------
+
+Query OK, 0 rows affected (2.973 sec)
+
+-- A13 (t=36): same again, but B holds the lock longer than the
+--             lock-wait timeout (3 s) -> ERROR 1205
+--------------
+SELECT t_now() AS t, 'A starts UPDATE on ACC104 again' AS event
+--------------
+
++------+---------------------------------+
+| t    | event                           |
++------+---------------------------------+
+| 36.0 | A starts UPDATE on ACC104 again |
++------+---------------------------------+
+1 row in set (0.000 sec)
+
+--------------
+UPDATE accounts SET balance = balance + 1000 WHERE acc_no = 'ACC104'
+--------------
+
+ERROR 1205 (HY000) at line 92: Lock wait timeout exceeded; try restarting transaction
+--------------
+SELECT t_now() AS t, 'A gave up waiting' AS event
+--------------
+
++------+-------------------+
+| t    | event             |
++------+-------------------+
+| 39.2 | A gave up waiting |
++------+-------------------+
+1 row in set (0.000 sec)
+
+-- SCENARIO 6 : DEADLOCK  (t = 42 .. 47)
+--------------
+CALL wait_until(42)
+--------------
+
+Query OK, 0 rows affected (2.864 sec)
+
+-- A14 (t=42): lock ACC101 first
+--------------
+START TRANSACTION
+--------------
+
+Query OK, 0 rows affected (0.000 sec)
+
+--------------
+UPDATE accounts SET balance = balance - 100 WHERE acc_no = 'ACC101'
+--------------
+
+Query OK, 1 row affected (0.001 sec)
+Rows matched: 1  Changed: 1  Warnings: 0
+
+--------------
+SELECT t_now() AS t, 'A locked ACC101' AS event
+--------------
+
++------+-----------------+
+| t    | event           |
++------+-----------------+
+| 42.1 | A locked ACC101 |
++------+-----------------+
+1 row in set (0.000 sec)
+
+--------------
+CALL wait_until(43)
+--------------
+
+Query OK, 0 rows affected (1.004 sec)
+
+-- A15 (t=43): now needs ACC102 (held by B) -> waits
+--------------
+UPDATE accounts SET balance = balance + 100 WHERE acc_no = 'ACC102'
+--------------
+
+Query OK, 1 row affected (1.002 sec)
+Rows matched: 1  Changed: 1  Warnings: 0
+
+--------------
+SELECT t_now() AS t, 'A got ACC102 after B was chosen as deadlock victim' AS event
+--------------
+
++------+----------------------------------------------------+
+| t    | event                                              |
++------+----------------------------------------------------+
+| 44.1 | A got ACC102 after B was chosen as deadlock victim |
++------+----------------------------------------------------+
+1 row in set (0.000 sec)
+
+--------------
+COMMIT
+--------------
+
+Query OK, 0 rows affected (0.001 sec)
+
+--------------
+CALL wait_until(46)
+--------------
+
+Query OK, 0 rows affected (1.995 sec)
+
+--------------
+SELECT t_now() AS t, acc_no, balance FROM accounts ORDER BY acc_no
+--------------
+
++------+--------+----------+
+| t    | acc_no | balance  |
++------+--------+----------+
+| 46.1 | ACC101 | 49900.00 |
+| 46.1 | ACC102 | 40100.00 |
+| 46.1 | ACC103 | 70000.00 |
+| 46.1 | ACC104 | 21000.00 |
+| 46.1 | ACC105 | 15000.00 |
+| 46.1 | ACC106 | 90000.00 |
+| 46.1 | ACC107 | 60000.00 |
++------+--------+----------+
+7 rows in set (0.001 sec)

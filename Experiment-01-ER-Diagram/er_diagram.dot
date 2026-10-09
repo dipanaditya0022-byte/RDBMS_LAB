@@ -1,0 +1,192 @@
+// Experiment 1 - ER Diagram (Chen notation) for an Indian E-commerce Platform
+// Render: dot -Kneato -Tpng er_diagram.dot -o er_diagram.png
+//
+// Legend
+//   Rectangle            = Strong entity
+//   Double rectangle     = Weak entity
+//   Diamond              = Relationship
+//   Double diamond       = Identifying relationship (owner -> weak entity)
+//   Ellipse              = Attribute
+//   Underlined           = Primary key
+//   Dashed underline     = Partial key (discriminator) of weak entity
+//   Double ellipse       = Multi-valued attribute
+//   Dashed ellipse       = Derived attribute
+//   Ellipse with ellipses attached = Composite attribute
+//   Triangle (ISA)       = Specialization / generalization
+//   Double line          = Total participation, single line = partial
+//   1 / N / M            = Cardinality ratio
+
+graph ER {
+    layout=neato;
+    overlap=false;
+    sep="+14";
+    splines=true;
+    outputorder=edgesfirst;
+    bgcolor="white";
+    pad=0.4;
+    fontname="Helvetica";
+    label=<<B>ER Diagram - Indian E-commerce Platform (Chen Notation)</B>>;
+    labelloc=t;
+    fontsize=22;
+
+    node [fontname="Helvetica", fontsize=11];
+    edge [color="#333333", fontname="Helvetica"];
+
+    // ---------------- Entities ----------------
+    node [shape=box, style="filled", fillcolor="#cfe2ff", penwidth=1.5, fontsize=13];
+    Customer; Seller; Product; Order; Category; Payment; Delivery;
+
+    node [shape=box, peripheries=2, fillcolor="#ffe5b4"];
+    Address; OrderItem [label="Order_Item"];
+    node [peripheries=1];
+
+    // Subclasses of Product
+    node [shape=box, fillcolor="#d1f2d1"];
+    Electronics; Clothing; Book;
+
+    // ---------------- Relationships ----------------
+    node [shape=diamond, style=filled, fillcolor="#fff3b0", fontsize=10, width=1.3, height=0.8];
+    PLACES; SELLS; BELONGS_TO; PAID_BY; SHIPPED_VIA [label="SHIPPED_VIA"]; SHIPS_TO; FOR_PRODUCT [label="FOR"];
+    SUB_OF [label="SUBCATEGORY\nOF"];
+    node [peripheries=2];
+    HAS_ADDR [label="HAS"]; CONTAINS;
+    node [peripheries=1];
+
+    // ISA triangle
+    ISA [shape=triangle, style=filled, fillcolor="#e8d7ff", label="ISA\n(d)", fontsize=10, width=0.9, height=0.8];
+
+    // ---------------- Attributes ----------------
+    node [shape=ellipse, style=filled, fillcolor="#f5f5f5", fontsize=10, width=0.2, height=0.2, peripheries=1];
+
+    // Customer
+    c_id    [label=<<U>customer_id</U>>];
+    c_name  [label="name"];
+    c_fn    [label="first_name"];
+    c_mn    [label="middle_name"];
+    c_ln    [label="last_name"];
+    c_email [label="email"];
+    c_phone [label="phone_no", peripheries=2];
+    c_dob   [label="dob"];
+    c_age   [label="age", style="filled,dashed"];
+    Customer -- {c_id c_name c_email c_phone c_dob c_age};
+    c_name -- {c_fn c_mn c_ln};
+
+    // Address (weak, owner = Customer)
+    a_no     [label=<<U>address_no</U>>, style="filled,dashed"];
+    a_house  [label="house_no"];
+    a_street [label="street"];
+    a_city   [label="city"];
+    a_state  [label="state"];
+    a_pin    [label="pincode"];
+    a_type   [label="type\n(Home/Work)"];
+    Address -- {a_no a_house a_street a_city a_state a_pin a_type};
+
+    // Seller
+    s_id     [label=<<U>seller_id</U>>];
+    s_name   [label="business_name"];
+    s_gstin  [label="gstin"];
+    s_pan    [label="pan"];
+    s_phone  [label="contact_no", peripheries=2];
+    s_rating [label="rating"];
+    Seller -- {s_id s_name s_gstin s_pan s_phone s_rating};
+
+    // Category
+    cat_id   [label=<<U>category_id</U>>];
+    cat_name [label="category_name"];
+    Category -- {cat_id cat_name};
+
+    // Product
+    p_id    [label=<<U>product_id</U>>];
+    p_name  [label="product_name"];
+    p_brand [label="brand"];
+    p_mrp   [label="mrp"];
+    p_price [label="selling_price"];
+    p_stock [label="stock_qty"];
+    p_gst   [label="gst_rate"];
+    Product -- {p_id p_name p_brand p_mrp p_price p_stock p_gst};
+
+    // Specialized attributes
+    e_warr  [label="warranty_months"];
+    e_power [label="power_rating"];
+    Electronics -- {e_warr e_power};
+    cl_size [label="size"];
+    cl_fab  [label="fabric"];
+    cl_gen  [label="gender"];
+    Clothing -- {cl_size cl_fab cl_gen};
+    b_isbn  [label="isbn"];
+    b_auth  [label="author", peripheries=2];
+    b_lang  [label="language"];
+    Book -- {b_isbn b_auth b_lang};
+
+    // Order
+    o_id     [label=<<U>order_id</U>>];
+    o_date   [label="order_date"];
+    o_status [label="status"];
+    o_total  [label="total_amount", style="filled,dashed"];
+    Order -- {o_id o_date o_status o_total};
+
+    // Order_Item (weak, owner = Order)
+    oi_no    [label=<<U>line_no</U>>, style="filled,dashed"];
+    oi_qty   [label="quantity"];
+    oi_price [label="unit_price"];
+    oi_disc  [label="discount"];
+    OrderItem -- {oi_no oi_qty oi_price oi_disc};
+
+    // Payment
+    pay_id     [label=<<U>payment_id</U>>];
+    pay_method [label="method\n(UPI/Card/COD/NetBanking)"];
+    pay_amt    [label="amount"];
+    pay_date   [label="paid_at"];
+    pay_txn    [label="transaction_ref"];
+    pay_status [label="status"];
+    Payment -- {pay_id pay_method pay_amt pay_date pay_txn pay_status};
+
+    // Delivery
+    d_id      [label=<<U>delivery_id</U>>];
+    d_courier [label="courier_partner"];
+    d_awb     [label="awb_no"];
+    d_ship    [label="shipped_on"];
+    d_deliv   [label="delivered_on"];
+    d_status  [label="status"];
+    Delivery -- {d_id d_courier d_awb d_ship d_deliv d_status};
+
+    // ---------------- Relationship edges ----------------
+    // total participation = double line ("color=black:invis:black")
+    edge [fontsize=12, fontcolor="#b00020", penwidth=1.2];
+
+    Customer -- HAS_ADDR  [label="1"];
+    HAS_ADDR -- Address   [label="N", color="black:invis:black"];
+
+    Customer -- PLACES    [label="1"];
+    PLACES   -- Order     [label="N", color="black:invis:black"];
+
+    Order    -- SHIPS_TO  [label="N", color="black:invis:black"];
+    SHIPS_TO -- Address   [label="1"];
+
+    Order    -- CONTAINS  [label="1", color="black:invis:black"];
+    CONTAINS -- OrderItem [label="N", color="black:invis:black"];
+
+    OrderItem   -- FOR_PRODUCT [label="N", color="black:invis:black"];
+    FOR_PRODUCT -- Product     [label="1"];
+
+    Seller -- SELLS   [label="1"];
+    SELLS  -- Product [label="N", color="black:invis:black"];
+
+    Product    -- BELONGS_TO [label="N", color="black:invis:black"];
+    BELONGS_TO -- Category   [label="1"];
+
+    Category -- SUB_OF [label="parent 1"];
+    SUB_OF   -- Category [label="child N"];
+
+    Order   -- PAID_BY [label="1"];
+    PAID_BY -- Payment [label="N", color="black:invis:black"];
+
+    Order       -- SHIPPED_VIA [label="1"];
+    SHIPPED_VIA -- Delivery    [label="1", color="black:invis:black"];
+
+    // Specialization (disjoint, partial)
+    Product -- ISA [label=""];
+    ISA -- Electronics;
+    ISA -- Clothing;
+    ISA -- Book;
+}

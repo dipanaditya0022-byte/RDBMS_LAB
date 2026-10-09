@@ -1,0 +1,710 @@
+-- Output of exp08_transactions.sql
+
+-- Experiment 8 part 1: transactions, savepoints, rollback
+
+-- part 2 (two sessions) is in exp08_session_A.sql and exp08_session_B.sql
+--------------
+DROP DATABASE IF EXISTS bank_db
+--------------
+
+Query OK, 4 rows affected (0.004 sec)
+
+--------------
+CREATE DATABASE bank_db
+--------------
+
+Query OK, 1 row affected (0.000 sec)
+
+--------------
+USE bank_db
+--------------
+
+Query OK, 0 rows affected (0.000 sec)
+
+--------------
+CREATE TABLE accounts (
+    acc_no   CHAR(6) PRIMARY KEY,
+    holder   VARCHAR(40) NOT NULL,
+    branch   VARCHAR(30) NOT NULL,
+    balance  DECIMAL(12,2) NOT NULL,
+    status   ENUM('ACTIVE','FROZEN') NOT NULL DEFAULT 'ACTIVE',
+    CONSTRAINT chk_balance CHECK (balance >= 0)        -- no overdraft
+) ENGINE = InnoDB
+--------------
+
+Query OK, 0 rows affected (0.002 sec)
+
+--------------
+CREATE TABLE transactions (
+    txn_id    INT AUTO_INCREMENT PRIMARY KEY,
+    from_acc  CHAR(6),
+    to_acc    CHAR(6),
+    amount    DECIMAL(12,2) NOT NULL,
+    txn_type  ENUM('TRANSFER','DEPOSIT','WITHDRAW','INTEREST','FEE') NOT NULL,
+    txn_time  DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+) ENGINE = InnoDB
+--------------
+
+Query OK, 0 rows affected (0.002 sec)
+
+-- failed transfers are saved here (after rollback)
+--------------
+CREATE TABLE failed_txn_log (
+    id        INT AUTO_INCREMENT PRIMARY KEY,
+    from_acc  CHAR(6),
+    to_acc    CHAR(6),
+    amount    DECIMAL(12,2),
+    reason    VARCHAR(200),
+    logged_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+)
+--------------
+
+Query OK, 0 rows affected (0.002 sec)
+
+--------------
+INSERT INTO accounts (acc_no, holder, branch, balance, status) VALUES
+('ACC101', 'Aarav Sharma',  'Mumbai - Andheri',   50000.00, 'ACTIVE'),
+('ACC102', 'Diya Patel',    'Ahmedabad - CG Rd',  30000.00, 'ACTIVE'),
+('ACC103', 'Kabir Singh',   'Pune - FC Road',     75000.00, 'ACTIVE'),
+('ACC104', 'Ishaan Reddy',  'Hyderabad - HITEC',  20000.00, 'ACTIVE'),
+('ACC105', 'Meera Pillai',  'Kochi - MG Road',    15000.00, 'FROZEN')
+--------------
+
+Query OK, 5 rows affected (0.000 sec)
+Records: 5  Duplicates: 0  Warnings: 0
+
+-- no debit/credit allowed on frozen account
+--------------
+CREATE TRIGGER trg_frozen_account
+BEFORE UPDATE ON accounts
+FOR EACH ROW
+BEGIN
+    IF OLD.status = 'FROZEN' AND NEW.balance <> OLD.balance THEN
+        SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'Account is FROZEN - no debit/credit allowed';
+    END IF;
+END
+--------------
+
+Query OK, 0 rows affected (0.001 sec)
+
+--------------
+SELECT * FROM accounts
+--------------
+
++--------+--------------+-------------------+----------+--------+
+| acc_no | holder       | branch            | balance  | status |
++--------+--------------+-------------------+----------+--------+
+| ACC101 | Aarav Sharma | Mumbai - Andheri  | 50000.00 | ACTIVE |
+| ACC102 | Diya Patel   | Ahmedabad - CG Rd | 30000.00 | ACTIVE |
+| ACC103 | Kabir Singh  | Pune - FC Road    | 75000.00 | ACTIVE |
+| ACC104 | Ishaan Reddy | Hyderabad - HITEC | 20000.00 | ACTIVE |
+| ACC105 | Meera Pillai | Kochi - MG Road   | 15000.00 | FROZEN |
++--------+--------------+-------------------+----------+--------+
+5 rows in set (0.000 sec)
+
+--------------
+SELECT SUM(balance) AS total_money_in_bank FROM accounts
+--------------
+
++---------------------+
+| total_money_in_bank |
++---------------------+
+|           190000.00 |
++---------------------+
+1 row in set (0.000 sec)
+
+-- PART A : COMMIT and ROLLBACK
+--------------
+SELECT @@autocommit AS autocommit, @@transaction_isolation AS isolation_level
+--------------
+
++------------+-----------------+
+| autocommit | isolation_level |
++------------+-----------------+
+|          1 | REPEATABLE-READ |
++------------+-----------------+
+1 row in set (0.000 sec)
+
+-- A1. Successful transfer of Rs 5,000 from ACC101 to ACC102 -> COMMIT
+--------------
+START TRANSACTION
+--------------
+
+Query OK, 0 rows affected (0.000 sec)
+
+--------------
+    UPDATE accounts SET balance = balance - 5000 WHERE acc_no = 'ACC101'
+--------------
+
+Query OK, 1 row affected (0.000 sec)
+Rows matched: 1  Changed: 1  Warnings: 0
+
+--------------
+    UPDATE accounts SET balance = balance + 5000 WHERE acc_no = 'ACC102'
+--------------
+
+Query OK, 1 row affected (0.000 sec)
+Rows matched: 1  Changed: 1  Warnings: 0
+
+--------------
+    INSERT INTO transactions (from_acc, to_acc, amount, txn_type) VALUES ('ACC101','ACC102',5000,'TRANSFER')
+--------------
+
+Query OK, 1 row affected (0.000 sec)
+
+--------------
+COMMIT
+--------------
+
+Query OK, 0 rows affected (0.000 sec)
+
+--------------
+SELECT acc_no, balance FROM accounts WHERE acc_no IN ('ACC101','ACC102')
+--------------
+
++--------+----------+
+| acc_no | balance  |
++--------+----------+
+| ACC101 | 45000.00 |
+| ACC102 | 35000.00 |
++--------+----------+
+2 rows in set (0.000 sec)
+
+-- A2. Transfer started but cancelled by the user -> ROLLBACK
+--------------
+BEGIN                       -- BEGIN is a synonym of START TRANSACTION
+--------------
+
+Query OK, 0 rows affected (0.000 sec)
+
+--------------
+    UPDATE accounts SET balance = balance - 20000 WHERE acc_no = 'ACC103'
+--------------
+
+Query OK, 1 row affected (0.000 sec)
+Rows matched: 1  Changed: 1  Warnings: 0
+
+--------------
+    UPDATE accounts SET balance = balance + 20000 WHERE acc_no = 'ACC104'
+--------------
+
+Query OK, 1 row affected (0.000 sec)
+Rows matched: 1  Changed: 1  Warnings: 0
+
+--------------
+    SELECT acc_no, balance FROM accounts WHERE acc_no IN ('ACC103','ACC104')
+--------------
+
++--------+----------+
+| acc_no | balance  |
++--------+----------+
+| ACC103 | 55000.00 |
+| ACC104 | 40000.00 |
++--------+----------+
+2 rows in set (0.000 sec)
+
+--------------
+ROLLBACK
+--------------
+
+Query OK, 0 rows affected (0.000 sec)
+
+-- after ROLLBACK the balances are back to the original values
+--------------
+SELECT acc_no, balance FROM accounts WHERE acc_no IN ('ACC103','ACC104')
+--------------
+
++--------+----------+
+| acc_no | balance  |
++--------+----------+
+| ACC103 | 75000.00 |
+| ACC104 | 20000.00 |
++--------+----------+
+2 rows in set (0.000 sec)
+
+-- PART B : SAVEPOINT, ROLLBACK TO SAVEPOINT, RELEASE SAVEPOINT
+--------------
+START TRANSACTION
+--------------
+
+Query OK, 0 rows affected (0.000 sec)
+
+--------------
+    UPDATE accounts SET balance = balance + 40000 WHERE acc_no = 'ACC104'
+--------------
+
+Query OK, 1 row affected (0.000 sec)
+Rows matched: 1  Changed: 1  Warnings: 0
+
+--------------
+    INSERT INTO transactions (to_acc, amount, txn_type) VALUES ('ACC104', 40000, 'DEPOSIT')
+--------------
+
+Query OK, 1 row affected (0.000 sec)
+
+--------------
+    SAVEPOINT after_salary
+--------------
+
+Query OK, 0 rows affected (0.000 sec)
+
+--------------
+    UPDATE accounts SET balance = balance - 15000 WHERE acc_no = 'ACC104'
+--------------
+
+Query OK, 1 row affected (0.000 sec)
+Rows matched: 1  Changed: 1  Warnings: 0
+
+--------------
+    UPDATE accounts SET balance = balance + 15000 WHERE acc_no = 'ACC102'
+--------------
+
+Query OK, 1 row affected (0.000 sec)
+Rows matched: 1  Changed: 1  Warnings: 0
+
+--------------
+    INSERT INTO transactions (from_acc, to_acc, amount, txn_type) VALUES ('ACC104','ACC102',15000,'TRANSFER')
+--------------
+
+Query OK, 1 row affected (0.000 sec)
+
+--------------
+    SAVEPOINT after_rent
+--------------
+
+Query OK, 0 rows affected (0.000 sec)
+
+--------------
+    UPDATE accounts SET balance = balance - 15000 WHERE acc_no = 'ACC104'
+--------------
+
+Query OK, 1 row affected (0.000 sec)
+Rows matched: 1  Changed: 1  Warnings: 0
+
+--------------
+    UPDATE accounts SET balance = balance + 15000 WHERE acc_no = 'ACC102'
+--------------
+
+Query OK, 1 row affected (0.000 sec)
+Rows matched: 1  Changed: 1  Warnings: 0
+
+--------------
+    SELECT acc_no, balance FROM accounts WHERE acc_no IN ('ACC102','ACC104')
+--------------
+
++--------+----------+
+| acc_no | balance  |
++--------+----------+
+| ACC102 | 65000.00 |
+| ACC104 | 30000.00 |
++--------+----------+
+2 rows in set (0.000 sec)
+
+--------------
+    ROLLBACK TO SAVEPOINT after_rent
+--------------
+
+Query OK, 0 rows affected (0.000 sec)
+
+--------------
+    SELECT acc_no, balance FROM accounts WHERE acc_no IN ('ACC102','ACC104')
+--------------
+
++--------+----------+
+| acc_no | balance  |
++--------+----------+
+| ACC102 | 50000.00 |
+| ACC104 | 45000.00 |
++--------+----------+
+2 rows in set (0.000 sec)
+
+--------------
+    RELEASE SAVEPOINT after_salary
+--------------
+
+Query OK, 0 rows affected (0.000 sec)
+
+--------------
+    ROLLBACK TO SAVEPOINT after_salary      -- ERROR 1305: SAVEPOINT does not exist
+--------------
+
+ERROR 1305 (42000) at line 103: SAVEPOINT after_salary does not exist
+--------------
+COMMIT                                      -- steps 1 and 2 are made permanent
+--------------
+
+Query OK, 0 rows affected (0.000 sec)
+
+--------------
+SELECT acc_no, balance FROM accounts WHERE acc_no IN ('ACC102','ACC104')
+--------------
+
++--------+----------+
+| acc_no | balance  |
++--------+----------+
+| ACC102 | 50000.00 |
+| ACC104 | 45000.00 |
++--------+----------+
+2 rows in set (0.000 sec)
+
+--------------
+SELECT * FROM transactions
+--------------
+
++--------+----------+--------+----------+----------+---------------------+
+| txn_id | from_acc | to_acc | amount   | txn_type | txn_time            |
++--------+----------+--------+----------+----------+---------------------+
+|      1 | ACC101   | ACC102 |  5000.00 | TRANSFER | 2026-10-10 02:11:59 |
+|      2 | NULL     | ACC104 | 40000.00 | DEPOSIT  | 2026-10-10 02:11:59 |
+|      3 | ACC104   | ACC102 | 15000.00 | TRANSFER | 2026-10-10 02:11:59 |
++--------+----------+--------+----------+----------+---------------------+
+3 rows in set (0.000 sec)
+
+-- PART C : Simulating partial failures inside a stored procedure
+--------------
+DROP PROCEDURE IF EXISTS transfer_funds
+--------------
+
+Query OK, 0 rows affected, 1 warning (0.000 sec)
+
+--------------
+CREATE PROCEDURE transfer_funds(IN p_from CHAR(6), IN p_to CHAR(6), IN p_amount DECIMAL(12,2))
+BEGIN
+    DECLARE v_msg VARCHAR(200);
+    DECLARE v_cnt INT;
+
+    DECLARE EXIT HANDLER FOR SQLEXCEPTION
+    BEGIN
+        GET DIAGNOSTICS CONDITION 1 v_msg = MESSAGE_TEXT;
+        ROLLBACK;                                  -- undo the partial work
+        INSERT INTO failed_txn_log (from_acc, to_acc, amount, reason)
+        VALUES (p_from, p_to, p_amount, v_msg);    -- runs in autocommit mode
+        SELECT 'ROLLED BACK' AS outcome, v_msg AS reason;
+    END;
+
+    START TRANSACTION;
+        IF p_amount <= 0 THEN
+            SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'Amount must be positive';
+        END IF;
+
+        -- credit is done first on purpose, so if debit fails
+        -- we get half done transfer which has to be rolled back
+        UPDATE accounts SET balance = balance + p_amount WHERE acc_no = p_to;
+        IF ROW_COUNT() = 0 THEN
+            SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'Receiver account not found';
+        END IF;
+
+        UPDATE accounts SET balance = balance - p_amount WHERE acc_no = p_from;  -- CHECK may fail here
+        SELECT COUNT(*) INTO v_cnt FROM accounts WHERE acc_no = p_from;
+        IF v_cnt = 0 THEN
+            SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'Sender account not found';
+        END IF;
+
+        INSERT INTO transactions (from_acc, to_acc, amount, txn_type)
+        VALUES (p_from, p_to, p_amount, 'TRANSFER');
+    COMMIT;
+    SELECT 'COMMITTED' AS outcome, CONCAT('Rs ', p_amount, ' ', p_from, ' -> ', p_to) AS details;
+END
+--------------
+
+Query OK, 0 rows affected (0.000 sec)
+
+--------------
+SELECT acc_no, balance, status FROM accounts
+--------------
+
++--------+----------+--------+
+| acc_no | balance  | status |
++--------+----------+--------+
+| ACC101 | 45000.00 | ACTIVE |
+| ACC102 | 50000.00 | ACTIVE |
+| ACC103 | 75000.00 | ACTIVE |
+| ACC104 | 45000.00 | ACTIVE |
+| ACC105 | 15000.00 | FROZEN |
++--------+----------+--------+
+5 rows in set (0.000 sec)
+
+-- C1. Valid transfer -> COMMITTED
+--------------
+CALL transfer_funds('ACC103', 'ACC101', 10000)
+--------------
+
++-----------+------------------------------+
+| outcome   | details                      |
++-----------+------------------------------+
+| COMMITTED | Rs 10000.00 ACC103 -> ACC101 |
++-----------+------------------------------+
+1 row in set (0.000 sec)
+
+Query OK, 0 rows affected (0.000 sec)
+
+-- C2. Insufficient balance: credit to ACC102 succeeds, debit of ACC104 violates
+--     CHECK (balance >= 0) -> whole transaction rolled back
+--------------
+CALL transfer_funds('ACC104', 'ACC102', 999999)
+--------------
+
++-------------+---------------------------------------------+
+| outcome     | reason                                      |
++-------------+---------------------------------------------+
+| ROLLED BACK | Check constraint 'chk_balance' is violated. |
++-------------+---------------------------------------------+
+1 row in set (0.000 sec)
+
+Query OK, 0 rows affected (0.000 sec)
+
+-- C3. Receiver does not exist
+--------------
+CALL transfer_funds('ACC101', 'ACC999', 1000)
+--------------
+
++-------------+----------------------------+
+| outcome     | reason                     |
++-------------+----------------------------+
+| ROLLED BACK | Receiver account not found |
++-------------+----------------------------+
+1 row in set (0.000 sec)
+
+Query OK, 0 rows affected (0.000 sec)
+
+-- C4. Sender does not exist (credit already done -> must be undone)
+--------------
+CALL transfer_funds('ACC999', 'ACC101', 1000)
+--------------
+
++-------------+--------------------------+
+| outcome     | reason                   |
++-------------+--------------------------+
+| ROLLED BACK | Sender account not found |
++-------------+--------------------------+
+1 row in set (0.000 sec)
+
+Query OK, 0 rows affected (0.000 sec)
+
+-- C5. Frozen receiver -> trigger raises error -> rolled back
+--------------
+CALL transfer_funds('ACC101', 'ACC105', 500)
+--------------
+
++-------------+---------------------------------------------+
+| outcome     | reason                                      |
++-------------+---------------------------------------------+
+| ROLLED BACK | Account is FROZEN - no debit/credit allowed |
++-------------+---------------------------------------------+
+1 row in set (0.000 sec)
+
+Query OK, 0 rows affected (0.000 sec)
+
+-- C6. Negative amount
+--------------
+CALL transfer_funds('ACC101', 'ACC102', -50)
+--------------
+
++-------------+-------------------------+
+| outcome     | reason                  |
++-------------+-------------------------+
+| ROLLED BACK | Amount must be positive |
++-------------+-------------------------+
+1 row in set (0.000 sec)
+
+Query OK, 0 rows affected (0.000 sec)
+
+-- Balances: only C1 changed anything; money is conserved
+--------------
+SELECT acc_no, balance, status FROM accounts
+--------------
+
++--------+----------+--------+
+| acc_no | balance  | status |
++--------+----------+--------+
+| ACC101 | 55000.00 | ACTIVE |
+| ACC102 | 50000.00 | ACTIVE |
+| ACC103 | 65000.00 | ACTIVE |
+| ACC104 | 45000.00 | ACTIVE |
+| ACC105 | 15000.00 | FROZEN |
++--------+----------+--------+
+5 rows in set (0.000 sec)
+
+--------------
+SELECT SUM(balance) AS total_money_in_bank FROM accounts
+--------------
+
++---------------------+
+| total_money_in_bank |
++---------------------+
+|           230000.00 |
++---------------------+
+1 row in set (0.000 sec)
+
+--------------
+SELECT id, from_acc, to_acc, amount, reason FROM failed_txn_log
+--------------
+
++----+----------+--------+-----------+---------------------------------------------+
+| id | from_acc | to_acc | amount    | reason                                      |
++----+----------+--------+-----------+---------------------------------------------+
+|  1 | ACC104   | ACC102 | 999999.00 | Check constraint 'chk_balance' is violated. |
+|  2 | ACC101   | ACC999 |   1000.00 | Receiver account not found                  |
+|  3 | ACC999   | ACC101 |   1000.00 | Sender account not found                    |
+|  4 | ACC101   | ACC105 |    500.00 | Account is FROZEN - no debit/credit allowed |
+|  5 | ACC101   | ACC102 |    -50.00 | Amount must be positive                     |
++----+----------+--------+-----------+---------------------------------------------+
+5 rows in set (0.000 sec)
+
+-- PART D : Batch job with one SAVEPOINT per row
+--   Post 1% interest to every account. A failure on one account rolls back
+--   only that account's work; the rest of the batch is committed.
+--------------
+DROP PROCEDURE IF EXISTS post_monthly_interest
+--------------
+
+Query OK, 0 rows affected, 1 warning (0.000 sec)
+
+--------------
+CREATE PROCEDURE post_monthly_interest()
+BEGIN
+    DECLARE v_acc   CHAR(6);
+    DECLARE v_done  INT DEFAULT 0;
+    DECLARE v_ok    INT DEFAULT 0;
+    DECLARE v_fail  INT DEFAULT 0;
+    DECLARE v_error INT DEFAULT 0;
+    DECLARE cur CURSOR FOR SELECT acc_no FROM accounts ORDER BY acc_no;
+    DECLARE CONTINUE HANDLER FOR NOT FOUND SET v_done = 1;
+    DECLARE CONTINUE HANDLER FOR SQLEXCEPTION SET v_error = 1;
+
+    START TRANSACTION;
+    OPEN cur;
+    acc_loop: LOOP
+        FETCH cur INTO v_acc;
+        IF v_done = 1 THEN LEAVE acc_loop; END IF;
+
+        SAVEPOINT sp_account;
+        SET v_error = 0;
+
+        INSERT INTO transactions (to_acc, amount, txn_type)
+        SELECT acc_no, ROUND(balance * 0.01, 2), 'INTEREST' FROM accounts WHERE acc_no = v_acc;
+        UPDATE accounts SET balance = ROUND(balance * 1.01, 2) WHERE acc_no = v_acc;
+
+        IF v_error = 1 THEN
+            ROLLBACK TO SAVEPOINT sp_account;    -- undo the INSERT for this account only
+            INSERT INTO failed_txn_log (to_acc, reason) VALUES (v_acc, 'Interest posting failed');
+            SET v_fail = v_fail + 1;
+        ELSE
+            SET v_ok = v_ok + 1;
+        END IF;
+    END LOOP;
+    CLOSE cur;
+    COMMIT;
+
+    SELECT v_ok AS accounts_credited, v_fail AS accounts_failed;
+END
+--------------
+
+Query OK, 0 rows affected (0.000 sec)
+
+--------------
+CALL post_monthly_interest()
+--------------
+
++-------------------+-----------------+
+| accounts_credited | accounts_failed |
++-------------------+-----------------+
+|                 4 |               1 |
++-------------------+-----------------+
+1 row in set (0.001 sec)
+
+Query OK, 0 rows affected (0.001 sec)
+
+--------------
+SELECT acc_no, balance, status FROM accounts
+--------------
+
++--------+----------+--------+
+| acc_no | balance  | status |
++--------+----------+--------+
+| ACC101 | 55550.00 | ACTIVE |
+| ACC102 | 50500.00 | ACTIVE |
+| ACC103 | 65650.00 | ACTIVE |
+| ACC104 | 45450.00 | ACTIVE |
+| ACC105 | 15000.00 | FROZEN |
++--------+----------+--------+
+5 rows in set (0.000 sec)
+
+--------------
+SELECT txn_id, to_acc, amount, txn_type FROM transactions WHERE txn_type = 'INTEREST'
+--------------
+
++--------+--------+--------+----------+
+| txn_id | to_acc | amount | txn_type |
++--------+--------+--------+----------+
+|      5 | ACC101 | 550.00 | INTEREST |
+|      6 | ACC102 | 500.00 | INTEREST |
+|      7 | ACC103 | 650.00 | INTEREST |
+|      8 | ACC104 | 450.00 | INTEREST |
++--------+--------+--------+----------+
+4 rows in set (0.000 sec)
+
+--------------
+SELECT id, to_acc, reason FROM failed_txn_log WHERE reason LIKE 'Interest%'
+--------------
+
++----+--------+-------------------------+
+| id | to_acc | reason                  |
++----+--------+-------------------------+
+|  6 | ACC105 | Interest posting failed |
++----+--------+-------------------------+
+1 row in set (0.000 sec)
+
+-- PART E : Implicit commit - DDL inside a transaction cannot be rolled back
+--------------
+START TRANSACTION
+--------------
+
+Query OK, 0 rows affected (0.000 sec)
+
+--------------
+    UPDATE accounts SET balance = balance + 1 WHERE acc_no = 'ACC101'
+--------------
+
+Query OK, 1 row affected (0.000 sec)
+Rows matched: 1  Changed: 1  Warnings: 0
+
+--------------
+    CREATE TABLE temp_audit (id INT)   -- DDL causes an IMPLICIT COMMIT
+--------------
+
+Query OK, 0 rows affected (0.002 sec)
+
+--------------
+ROLLBACK                               -- nothing left to roll back
+--------------
+
+Query OK, 0 rows affected (0.000 sec)
+
+--------------
+SELECT acc_no, balance FROM accounts WHERE acc_no = 'ACC101'   -- the +1 survived
+--------------
+
++--------+----------+
+| acc_no | balance  |
++--------+----------+
+| ACC101 | 55551.00 |
++--------+----------+
+1 row in set (0.000 sec)
+
+--------------
+DROP TABLE temp_audit
+--------------
+
+Query OK, 0 rows affected (0.001 sec)
+
+-- Reset balances for the two-session concurrency demo (Part 2)
+--------------
+UPDATE accounts SET balance = CASE acc_no
+    WHEN 'ACC101' THEN 50000 WHEN 'ACC102' THEN 30000 WHEN 'ACC103' THEN 75000
+    WHEN 'ACC104' THEN 20000 ELSE balance END
+WHERE status = 'ACTIVE'
+--------------
+
+Query OK, 4 rows affected (0.000 sec)
+Rows matched: 4  Changed: 4  Warnings: 0

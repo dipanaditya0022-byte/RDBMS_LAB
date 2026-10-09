@@ -1,0 +1,755 @@
+-- Output of exp10_query_optimization.sql
+
+-- Experiment 10: query optimization (20000 customers + 100000 orders)
+
+--------------
+DROP DATABASE IF EXISTS shop_db
+--------------
+
+Query OK, 3 rows affected (0.004 sec)
+
+--------------
+CREATE DATABASE shop_db
+--------------
+
+Query OK, 1 row affected (0.000 sec)
+
+--------------
+USE shop_db
+--------------
+
+Query OK, 0 rows affected (0.000 sec)
+
+-- PART A : Schema (primary keys only - no secondary indexes yet)
+--------------
+CREATE TABLE customers (
+    customer_id  INT PRIMARY KEY,
+    full_name    VARCHAR(50) NOT NULL,
+    email        VARCHAR(80) NOT NULL,
+    phone        VARCHAR(10) NOT NULL,         -- stored as text
+    city         VARCHAR(30) NOT NULL,
+    signup_date  DATE NOT NULL
+)
+--------------
+
+Query OK, 0 rows affected (0.001 sec)
+
+--------------
+CREATE TABLE orders (
+    order_id      INT PRIMARY KEY,
+    customer_id   INT NOT NULL,
+    order_date    DATETIME NOT NULL,
+    status        VARCHAR(12) NOT NULL,
+    payment_mode  VARCHAR(12) NOT NULL,
+    amount        DECIMAL(10,2) NOT NULL
+)
+--------------
+
+Query OK, 0 rows affected (0.001 sec)
+
+-- PART B : Generate the dataset (values made using CRC32 of n)
+--------------
+SET SESSION cte_max_recursion_depth = 200000
+--------------
+
+Query OK, 0 rows affected (0.000 sec)
+
+--------------
+INSERT INTO customers
+WITH RECURSIVE seq(n) AS (SELECT 1 UNION ALL SELECT n + 1 FROM seq WHERE n < 20000)
+SELECT n,
+       CONCAT(ELT(1 + CRC32(CONCAT(n,'f')) % 20, 'Aarav','Vivaan','Aditya','Vihaan','Arjun','Sai',
+              'Reyansh','Krishna','Ishaan','Rohan','Ananya','Diya','Saanvi','Aadhya','Pari','Myra',
+              'Kavya','Priya','Sneha','Meera'), ' ',
+              ELT(1 + CRC32(CONCAT(n,'l')) % 15, 'Sharma','Verma','Patel','Reddy','Iyer','Nair',
+              'Singh','Gupta','Joshi','Kulkarni','Mehta','Rao','Das','Banerjee','Khan')),
+       CONCAT('user', n, '@example.in'),
+       CONCAT('9', LPAD((n * 7919) % 1000000000, 9, '0')),
+       ELT(1 + CRC32(CONCAT(n,'c')) % 20, 'Mumbai','Delhi','Bengaluru','Hyderabad','Chennai',
+           'Kolkata','Pune','Ahmedabad','Jaipur','Lucknow','Surat','Indore','Bhopal','Nagpur',
+           'Kochi','Chandigarh','Patna','Vadodara','Coimbatore','Visakhapatnam'),
+       DATE_ADD('2020-01-01', INTERVAL CRC32(CONCAT(n,'s')) % 2000 DAY)
+FROM seq
+--------------
+
+Query OK, 20000 rows affected (0.063 sec)
+Records: 20000  Duplicates: 0  Warnings: 0
+
+--------------
+INSERT INTO orders
+WITH RECURSIVE seq(n) AS (SELECT 1 UNION ALL SELECT n + 1 FROM seq WHERE n < 100000)
+SELECT n,
+       1 + CRC32(CONCAT(n,'cust')) % 20000,
+       TIMESTAMP('2023-01-01') + INTERVAL CRC32(CONCAT(n,'d')) % 1000 DAY
+                               + INTERVAL CRC32(CONCAT(n,'t')) % 86400 SECOND,
+       ELT(1 + CRC32(CONCAT(n,'st')) % 10, 'DELIVERED','DELIVERED','DELIVERED','DELIVERED',
+           'DELIVERED','DELIVERED','DELIVERED','SHIPPED','CANCELLED','RETURNED'),
+       ELT(1 + CRC32(CONCAT(n,'pm')) % 5, 'UPI','CARD','COD','NETBANKING','WALLET'),
+       100 + CRC32(CONCAT(n,'a')) % 20000
+FROM seq
+--------------
+
+Query OK, 100000 rows affected (0.388 sec)
+Records: 100000  Duplicates: 0  Warnings: 0
+
+--------------
+ANALYZE TABLE customers, orders
+--------------
+
++-------------------+---------+----------+----------+
+| Table             | Op      | Msg_type | Msg_text |
++-------------------+---------+----------+----------+
+| shop_db.customers | analyze | status   | OK       |
+| shop_db.orders    | analyze | status   | OK       |
++-------------------+---------+----------+----------+
+2 rows in set (0.001 sec)
+
+--------------
+SELECT (SELECT COUNT(*) FROM customers) AS customers,
+       (SELECT COUNT(*) FROM orders)    AS orders,
+       (SELECT COUNT(*) FROM customers) + (SELECT COUNT(*) FROM orders) AS total_rows
+--------------
+
++-----------+--------+------------+
+| customers | orders | total_rows |
++-----------+--------+------------+
+|     20000 | 100000 |     120000 |
++-----------+--------+------------+
+1 row in set (0.005 sec)
+
+--------------
+SELECT * FROM customers LIMIT 3
+--------------
+
++-------------+-------------+------------------+------------+-----------+-------------+
+| customer_id | full_name   | email            | phone      | city      | signup_date |
++-------------+-------------+------------------+------------+-----------+-------------+
+|           1 | Kavya Singh | user1@example.in | 9000007919 | Hyderabad | 2024-02-24  |
+|           2 | Myra Sharma | user2@example.in | 9000015838 | Chennai   | 2021-01-11  |
+|           3 | Aditya Rao  | user3@example.in | 9000023757 | Vadodara  | 2022-08-27  |
++-------------+-------------+------------------+------------+-----------+-------------+
+3 rows in set (0.000 sec)
+
+--------------
+SELECT * FROM orders LIMIT 3
+--------------
+
++----------+-------------+---------------------+-----------+--------------+----------+
+| order_id | customer_id | order_date          | status    | payment_mode | amount   |
++----------+-------------+---------------------+-----------+--------------+----------+
+|        1 |       19886 | 2023-05-05 01:54:48 | RETURNED  | CARD         |  2727.00 |
+|        2 |       10142 | 2023-09-05 11:34:03 | DELIVERED | COD          |  3460.00 |
+|        3 |         302 | 2024-02-11 18:46:02 | SHIPPED   | COD          | 10469.00 |
++----------+-------------+---------------------+-----------+--------------+----------+
+3 rows in set (0.000 sec)
+
+-- PART C : Benchmark helper
+--   Runs a statement N times, stores the average time and the result
+--   (@c, @s) to check that optimized query gives same answer
+--------------
+CREATE TABLE timing (
+    query_no   VARCHAR(4),
+    version    VARCHAR(30),
+    runs       INT,
+    avg_ms     DECIMAL(12,3),
+    result_c   BIGINT,
+    result_s   DECIMAL(16,2),
+    PRIMARY KEY (query_no, version)
+)
+--------------
+
+Query OK, 0 rows affected (0.003 sec)
+
+--------------
+CREATE PROCEDURE bench(IN p_no VARCHAR(4), IN p_version VARCHAR(30), IN p_sql TEXT, IN p_runs INT)
+BEGIN
+    DECLARE i INT DEFAULT 0;
+    DECLARE t0 DATETIME(6);
+    SET @bench_sql = p_sql;
+    PREPARE s FROM @bench_sql;
+    SET t0 = NOW(6);
+    WHILE i < p_runs DO
+        EXECUTE s;
+        SET i = i + 1;
+    END WHILE;
+    REPLACE INTO timing VALUES (p_no, p_version, p_runs,
+        TIMESTAMPDIFF(MICROSECOND, t0, NOW(6)) / 1000 / p_runs, @c, @s);
+    DEALLOCATE PREPARE s;
+END
+--------------
+
+Query OK, 0 rows affected (0.000 sec)
+
+-- SLOW QUERY 1 : function applied to an indexed/filter column
+--   "Revenue for March 2024"
+--------------
+SET @sq1_slow = "SELECT COUNT(*), SUM(amount) INTO @c, @s FROM orders
+                 WHERE YEAR(order_date) = 2024 AND MONTH(order_date) = 3"
+--------------
+
+Query OK, 0 rows affected (0.000 sec)
+
+--------------
+SET @sq1_fast = "SELECT COUNT(*), SUM(amount) INTO @c, @s FROM orders
+                 WHERE order_date >= '2024-03-01' AND order_date < '2024-04-01'"
+--------------
+
+Query OK, 0 rows affected (0.000 sec)
+
+--------------
+EXPLAIN FORMAT=TRADITIONAL
+SELECT COUNT(*), SUM(amount) FROM orders WHERE YEAR(order_date) = 2024 AND MONTH(order_date) = 3
+--------------
+
++----+-------------+--------+------------+------+---------------+------+---------+------+--------+----------+-------------+
+| id | select_type | table  | partitions | type | possible_keys | key  | key_len | ref  | rows   | filtered | Extra       |
++----+-------------+--------+------------+------+---------------+------+---------+------+--------+----------+-------------+
+|  1 | SIMPLE      | orders | NULL       | ALL  | NULL          | NULL | NULL    | NULL | 100045 |   100.00 | Using where |
++----+-------------+--------+------------+------+---------------+------+---------+------+--------+----------+-------------+
+1 row in set, 1 warning (0.000 sec)
+
+--------------
+CALL bench('SQ1', '1 original (no index)', @sq1_slow, 10)
+--------------
+
+Query OK, 0 rows affected (0.108 sec)
+
+--------------
+CREATE INDEX idx_orders_date_amount ON orders (order_date, amount)
+--------------
+
+Query OK, 0 rows affected (0.064 sec)
+Records: 0  Duplicates: 0  Warnings: 0
+
+-- index exists, but YEAR()/MONTH() hide the column -> still not usable for a range
+--------------
+EXPLAIN FORMAT=TRADITIONAL
+SELECT COUNT(*), SUM(amount) FROM orders WHERE YEAR(order_date) = 2024 AND MONTH(order_date) = 3
+--------------
+
++----+-------------+--------+------------+-------+---------------+------------------------+---------+------+--------+----------+--------------------------+
+| id | select_type | table  | partitions | type  | possible_keys | key                    | key_len | ref  | rows   | filtered | Extra                    |
++----+-------------+--------+------------+-------+---------------+------------------------+---------+------+--------+----------+--------------------------+
+|  1 | SIMPLE      | orders | NULL       | index | NULL          | idx_orders_date_amount | 10      | NULL | 100045 |   100.00 | Using where; Using index |
++----+-------------+--------+------------+-------+---------------+------------------------+---------+------+--------+----------+--------------------------+
+1 row in set, 1 warning (0.000 sec)
+
+--------------
+CALL bench('SQ1', '2 original + index', @sq1_slow, 10)
+--------------
+
+Query OK, 0 rows affected (0.084 sec)
+
+-- rewrite as a sargable range -> index range scan, covering (order_date, amount)
+--------------
+EXPLAIN FORMAT=TRADITIONAL
+SELECT COUNT(*), SUM(amount) FROM orders WHERE order_date >= '2024-03-01' AND order_date < '2024-04-01'
+--------------
+
++----+-------------+--------+------------+-------+------------------------+------------------------+---------+------+------+----------+--------------------------+
+| id | select_type | table  | partitions | type  | possible_keys          | key                    | key_len | ref  | rows | filtered | Extra                    |
++----+-------------+--------+------------+-------+------------------------+------------------------+---------+------+------+----------+--------------------------+
+|  1 | SIMPLE      | orders | NULL       | range | idx_orders_date_amount | idx_orders_date_amount | 5       | NULL | 3102 |   100.00 | Using where; Using index |
++----+-------------+--------+------------+-------+------------------------+------------------------+---------+------+------+----------+--------------------------+
+1 row in set, 1 warning (0.000 sec)
+
+--------------
+CALL bench('SQ1', '3 rewritten + index', @sq1_fast, 10)
+--------------
+
+Query OK, 0 rows affected (0.004 sec)
+
+-- SLOW QUERY 2 : implicit type conversion (VARCHAR column vs number)
+--   "Find customer by mobile number"
+--------------
+SET @sq2_slow = "SELECT COUNT(*), MAX(customer_id) INTO @c, @s FROM customers WHERE phone = 9039595000"
+--------------
+
+Query OK, 0 rows affected (0.000 sec)
+
+--------------
+SET @sq2_fast = "SELECT COUNT(*), MAX(customer_id) INTO @c, @s FROM customers WHERE phone = '9039595000'"
+--------------
+
+Query OK, 0 rows affected (0.000 sec)
+
+--------------
+SELECT customer_id, full_name, phone, city FROM customers WHERE phone = '9039595000'
+--------------
+
++-------------+--------------+------------+-----------+
+| customer_id | full_name    | phone      | city      |
++-------------+--------------+------------+-----------+
+|        5000 | Saanvi Patel | 9039595000 | Hyderabad |
++-------------+--------------+------------+-----------+
+1 row in set (0.003 sec)
+
+--------------
+EXPLAIN FORMAT=TRADITIONAL SELECT * FROM customers WHERE phone = 9039595000
+--------------
+
++----+-------------+-----------+------------+------+---------------+------+---------+------+-------+----------+-------------+
+| id | select_type | table     | partitions | type | possible_keys | key  | key_len | ref  | rows  | filtered | Extra       |
++----+-------------+-----------+------------+------+---------------+------+---------+------+-------+----------+-------------+
+|  1 | SIMPLE      | customers | NULL       | ALL  | NULL          | NULL | NULL    | NULL | 19533 |    10.00 | Using where |
++----+-------------+-----------+------------+------+---------------+------+---------+------+-------+----------+-------------+
+1 row in set, 1 warning (0.000 sec)
+
+--------------
+CALL bench('SQ2', '1 original (no index)', @sq2_slow, 20)
+--------------
+
+Query OK, 0 rows affected (0.041 sec)
+
+--------------
+CREATE INDEX idx_customers_phone ON customers (phone)
+--------------
+
+Query OK, 0 rows affected (0.034 sec)
+Records: 0  Duplicates: 0  Warnings: 0
+
+-- number literal -> every phone string must be converted -> index ignored
+--------------
+EXPLAIN FORMAT=TRADITIONAL SELECT * FROM customers WHERE phone = 9039595000
+--------------
+
++----+-------------+-----------+------------+------+---------------------+------+---------+------+-------+----------+-------------+
+| id | select_type | table     | partitions | type | possible_keys       | key  | key_len | ref  | rows  | filtered | Extra       |
++----+-------------+-----------+------------+------+---------------------+------+---------+------+-------+----------+-------------+
+|  1 | SIMPLE      | customers | NULL       | ALL  | idx_customers_phone | NULL | NULL    | NULL | 19533 |    10.00 | Using where |
++----+-------------+-----------+------------+------+---------------------+------+---------+------+-------+----------+-------------+
+1 row in set, 3 warnings (0.000 sec)
+
+--------------
+CALL bench('SQ2', '2 original + index', @sq2_slow, 20)
+--------------
+
+Query OK, 0 rows affected (0.034 sec)
+
+-- string literal -> index lookup (type = ref)
+--------------
+EXPLAIN FORMAT=TRADITIONAL SELECT * FROM customers WHERE phone = '9039595000'
+--------------
+
++----+-------------+-----------+------------+------+---------------------+---------------------+---------+-------+------+----------+-------+
+| id | select_type | table     | partitions | type | possible_keys       | key                 | key_len | ref   | rows | filtered | Extra |
++----+-------------+-----------+------------+------+---------------------+---------------------+---------+-------+------+----------+-------+
+|  1 | SIMPLE      | customers | NULL       | ref  | idx_customers_phone | idx_customers_phone | 42      | const |    1 |   100.00 | NULL  |
++----+-------------+-----------+------------+------+---------------------+---------------------+---------+-------+------+----------+-------+
+1 row in set, 1 warning (0.000 sec)
+
+--------------
+CALL bench('SQ2', '3 rewritten + index', @sq2_fast, 20)
+--------------
+
+Query OK, 0 rows affected (0.000 sec)
+
+-- SLOW QUERY 3 : correlated subquery executed once per outer row
+--   "Pune customers who joined in 2025 and spent more than Rs 40,000"
+--------------
+SET @sq3_slow = "SELECT COUNT(*), SUM(c.customer_id) INTO @c, @s
+                 FROM customers c
+                 WHERE c.city = 'Pune' AND c.signup_date >= '2025-01-01'
+                   AND (SELECT SUM(o.amount) FROM orders o
+                        WHERE o.customer_id = c.customer_id) > 40000"
+--------------
+
+Query OK, 0 rows affected (0.000 sec)
+
+--------------
+SET @sq3_fast = "SELECT COUNT(*), SUM(t.customer_id) INTO @c, @s FROM (
+                     SELECT c.customer_id
+                     FROM customers c
+                     JOIN orders o ON o.customer_id = c.customer_id
+                     WHERE c.city = 'Pune' AND c.signup_date >= '2025-01-01'
+                     GROUP BY c.customer_id
+                     HAVING SUM(o.amount) > 40000) t"
+--------------
+
+Query OK, 0 rows affected (0.000 sec)
+
+--------------
+EXPLAIN FORMAT=TRADITIONAL
+SELECT c.customer_id FROM customers c
+WHERE c.city = 'Pune' AND c.signup_date >= '2025-01-01'
+  AND (SELECT SUM(o.amount) FROM orders o WHERE o.customer_id = c.customer_id) > 40000
+--------------
+
++----+--------------------+-------+------------+------+---------------+------+---------+------+--------+----------+-------------+
+| id | select_type        | table | partitions | type | possible_keys | key  | key_len | ref  | rows   | filtered | Extra       |
++----+--------------------+-------+------------+------+---------------+------+---------+------+--------+----------+-------------+
+|  1 | PRIMARY            | c     | NULL       | ALL  | NULL          | NULL | NULL    | NULL |  19533 |     3.33 | Using where |
+|  2 | DEPENDENT SUBQUERY | o     | NULL       | ALL  | NULL          | NULL | NULL    | NULL | 100045 |    10.00 | Using where |
++----+--------------------+-------+------------+------+---------------+------+---------+------+--------+----------+-------------+
+2 rows in set, 2 warnings (0.000 sec)
+
+--------------
+CALL bench('SQ3', '1 original (no index)', @sq3_slow, 1)
+--------------
+
+Query OK, 0 rows affected (0.651 sec)
+
+--------------
+CREATE INDEX idx_orders_cust_amount  ON orders (customer_id, amount)
+--------------
+
+Query OK, 0 rows affected (0.066 sec)
+Records: 0  Duplicates: 0  Warnings: 0
+
+--------------
+CREATE INDEX idx_customers_city_sign ON customers (city, signup_date)
+--------------
+
+Query OK, 0 rows affected (0.038 sec)
+Records: 0  Duplicates: 0  Warnings: 0
+
+--------------
+EXPLAIN FORMAT=TRADITIONAL
+SELECT c.customer_id FROM customers c
+WHERE c.city = 'Pune' AND c.signup_date >= '2025-01-01'
+  AND (SELECT SUM(o.amount) FROM orders o WHERE o.customer_id = c.customer_id) > 40000
+--------------
+
++----+--------------------+-------+------------+-------+-------------------------+-------------------------+---------+-----------------------+------+----------+--------------------------+
+| id | select_type        | table | partitions | type  | possible_keys           | key                     | key_len | ref                   | rows | filtered | Extra                    |
++----+--------------------+-------+------------+-------+-------------------------+-------------------------+---------+-----------------------+------+----------+--------------------------+
+|  1 | PRIMARY            | c     | NULL       | range | idx_customers_city_sign | idx_customers_city_sign | 125     | NULL                  |   77 |   100.00 | Using where; Using index |
+|  2 | DEPENDENT SUBQUERY | o     | NULL       | ref   | idx_orders_cust_amount  | idx_orders_cust_amount  | 4       | shop_db.c.customer_id |    5 |   100.00 | Using index              |
++----+--------------------+-------+------------+-------+-------------------------+-------------------------+---------+-----------------------+------+----------+--------------------------+
+2 rows in set, 2 warnings (0.000 sec)
+
+--------------
+CALL bench('SQ3', '2 original + index', @sq3_slow, 10)
+--------------
+
+Query OK, 0 rows affected (0.002 sec)
+
+--------------
+EXPLAIN FORMAT=TRADITIONAL
+SELECT c.customer_id
+FROM customers c JOIN orders o ON o.customer_id = c.customer_id
+WHERE c.city = 'Pune' AND c.signup_date >= '2025-01-01'
+GROUP BY c.customer_id HAVING SUM(o.amount) > 40000
+--------------
+
++----+-------------+-------+------------+-------+-----------------------------------------------------+-------------------------+---------+-----------------------+------+----------+-------------------------------------------+
+| id | select_type | table | partitions | type  | possible_keys                                       | key                     | key_len | ref                   | rows | filtered | Extra                                     |
++----+-------------+-------+------------+-------+-----------------------------------------------------+-------------------------+---------+-----------------------+------+----------+-------------------------------------------+
+|  1 | SIMPLE      | c     | NULL       | range | PRIMARY,idx_customers_phone,idx_customers_city_sign | idx_customers_city_sign | 125     | NULL                  |   77 |   100.00 | Using where; Using index; Using temporary |
+|  1 | SIMPLE      | o     | NULL       | ref   | idx_orders_cust_amount                              | idx_orders_cust_amount  | 4       | shop_db.c.customer_id |    5 |   100.00 | Using index                               |
++----+-------------+-------+------------+-------+-----------------------------------------------------+-------------------------+---------+-----------------------+------+----------+-------------------------------------------+
+2 rows in set, 1 warning (0.000 sec)
+
+--------------
+CALL bench('SQ3', '3 rewritten + index', @sq3_fast, 10)
+--------------
+
+Query OK, 0 rows affected (0.002 sec)
+
+--------------
+EXPLAIN ANALYZE
+SELECT c.customer_id
+FROM customers c JOIN orders o ON o.customer_id = c.customer_id
+WHERE c.city = 'Pune' AND c.signup_date >= '2025-01-01'
+GROUP BY c.customer_id HAVING SUM(o.amount) > 40000
+--------------
+
+EXPLAIN plan:
+-> Filter: (`sum(o.amount)` > 40000)  (actual time=0.155..0.161 rows=43 loops=1)
+    -> Table scan on <temporary>  (actual time=0.154..0.158 rows=76 loops=1)
+        -> Aggregate using temporary table  (actual time=0.154..0.154 rows=76 loops=1)
+            -> Nested loop inner join  (cost=89.7 rows=391) (actual time=0.00417..0.11 rows=360 loops=1)
+                -> Filter: ((c.city = 'Pune') and (c.signup_date >= DATE'2025-01-01'))  (cost=16 rows=77) (actual time=0.00267..0.0178 rows=77 loops=1)
+                    -> Covering index range scan on c using idx_customers_city_sign over (city = 'Pune' AND '2025-01-01' <= signup_date)  (cost=16 rows=77) (actual time=0.00237..0.0124 rows=77 loops=1)
+                -> Covering index lookup on o using idx_orders_cust_amount (customer_id = c.customer_id)  (cost=0.457 rows=5.08) (actual time=726e-6..0.00102 rows=4.68 loops=77)
+1 row in set (0.000 sec)
+
+-- SLOW QUERY 4 : deep pagination with a large OFFSET
+--   "Page 4001 of order history (20 rows per page)"
+--------------
+SET @sq4_slow = "SELECT COUNT(*), SUM(amount) INTO @c, @s FROM (
+                     SELECT order_id, amount FROM orders
+                     ORDER BY order_date DESC, order_id DESC
+                     LIMIT 20 OFFSET 80000) t"
+--------------
+
+Query OK, 0 rows affected (0.000 sec)
+
+-- keyset ("seek") pagination: remember the last row of the previous page
+--------------
+SELECT order_date, order_id INTO @last_date, @last_id
+FROM orders ORDER BY order_date DESC, order_id DESC LIMIT 1 OFFSET 79999
+--------------
+
+Query OK, 1 row affected (0.020 sec)
+
+--------------
+SELECT @last_date AS last_seen_date, @last_id AS last_seen_id
+--------------
+
++---------------------+--------------+
+| last_seen_date      | last_seen_id |
++---------------------+--------------+
+| 2023-07-21 12:00:53 |        89852 |
++---------------------+--------------+
+1 row in set (0.000 sec)
+
+--------------
+SET @sq4_fast = CONCAT("SELECT COUNT(*), SUM(amount) INTO @c, @s FROM (
+                     SELECT order_id, amount FROM orders
+                     WHERE order_date < '", @last_date, "'
+                        OR (order_date = '", @last_date, "' AND order_id < ", @last_id, ")
+                     ORDER BY order_date DESC, order_id DESC
+                     LIMIT 20) t")
+--------------
+
+Query OK, 0 rows affected (0.000 sec)
+
+--------------
+DROP INDEX idx_orders_date_amount ON orders      -- start this test without any date index
+--------------
+
+Query OK, 0 rows affected (0.001 sec)
+Records: 0  Duplicates: 0  Warnings: 0
+
+--------------
+EXPLAIN FORMAT=TRADITIONAL
+SELECT order_id, amount FROM orders ORDER BY order_date DESC, order_id DESC LIMIT 20 OFFSET 80000
+--------------
+
++----+-------------+--------+------------+------+---------------+------+---------+------+--------+----------+----------------+
+| id | select_type | table  | partitions | type | possible_keys | key  | key_len | ref  | rows   | filtered | Extra          |
++----+-------------+--------+------------+------+---------------+------+---------+------+--------+----------+----------------+
+|  1 | SIMPLE      | orders | NULL       | ALL  | NULL          | NULL | NULL    | NULL | 100045 |   100.00 | Using filesort |
++----+-------------+--------+------------+------+---------------+------+---------+------+--------+----------+----------------+
+1 row in set, 1 warning (0.000 sec)
+
+--------------
+CALL bench('SQ4', '1 original (no index)', @sq4_slow, 10)
+--------------
+
+Query OK, 0 rows affected (0.300 sec)
+
+-- InnoDB appends the primary key to every secondary index, so (order_date)
+-- is really (order_date, order_id) = exactly the ORDER BY of the page query
+--------------
+CREATE INDEX idx_orders_date ON orders (order_date)
+--------------
+
+Query OK, 0 rows affected (0.057 sec)
+Records: 0  Duplicates: 0  Warnings: 0
+
+--------------
+EXPLAIN FORMAT=TRADITIONAL
+SELECT order_id, amount FROM orders ORDER BY order_date DESC, order_id DESC LIMIT 20 OFFSET 80000
+--------------
+
++----+-------------+--------+------------+------+---------------+------+---------+------+--------+----------+----------------+
+| id | select_type | table  | partitions | type | possible_keys | key  | key_len | ref  | rows   | filtered | Extra          |
++----+-------------+--------+------------+------+---------------+------+---------+------+--------+----------+----------------+
+|  1 | SIMPLE      | orders | NULL       | ALL  | NULL          | NULL | NULL    | NULL | 100045 |   100.00 | Using filesort |
++----+-------------+--------+------------+------+---------------+------+---------+------+--------+----------+----------------+
+1 row in set, 1 warning (0.000 sec)
+
+--------------
+CALL bench('SQ4', '2 original + index', @sq4_slow, 10)
+--------------
+
+Query OK, 0 rows affected (0.309 sec)
+
+--------------
+EXPLAIN FORMAT=TRADITIONAL
+SELECT order_id, amount FROM orders
+WHERE order_date < @last_date OR (order_date = @last_date AND order_id < @last_id)
+ORDER BY order_date DESC, order_id DESC LIMIT 20
+--------------
+
++----+-------------+--------+------------+-------+-------------------------+-----------------+---------+------+-------+----------+--------------------------------------------+
+| id | select_type | table  | partitions | type  | possible_keys           | key             | key_len | ref  | rows  | filtered | Extra                                      |
++----+-------------+--------+------------+-------+-------------------------+-----------------+---------+------+-------+----------+--------------------------------------------+
+|  1 | SIMPLE      | orders | NULL       | range | PRIMARY,idx_orders_date | idx_orders_date | 9       | NULL | 38909 |   100.00 | Using index condition; Backward index scan |
++----+-------------+--------+------------+-------+-------------------------+-----------------+---------+------+-------+----------+--------------------------------------------+
+1 row in set, 1 warning (0.000 sec)
+
+--------------
+CALL bench('SQ4', '3 rewritten + index', @sq4_fast, 10)
+--------------
+
+Query OK, 0 rows affected (0.007 sec)
+
+-- SLOW QUERY 5 : filter + ORDER BY + LIMIT with SELECT * (filesort)
+--   "Top 10 highest-value COD orders that were RETURNED"
+--------------
+SET @sq5_slow = "SELECT COUNT(*), SUM(amount) INTO @c, @s FROM (
+                     SELECT * FROM orders
+                     WHERE status = 'RETURNED' AND payment_mode = 'COD'
+                     ORDER BY amount DESC LIMIT 10) t"
+--------------
+
+Query OK, 0 rows affected (0.000 sec)
+
+--------------
+SET @sq5_fast = "SELECT COUNT(*), SUM(amount) INTO @c, @s FROM (
+                     SELECT order_id, customer_id, order_date, amount FROM orders
+                     WHERE status = 'RETURNED' AND payment_mode = 'COD'
+                     ORDER BY amount DESC LIMIT 10) t"
+--------------
+
+Query OK, 0 rows affected (0.000 sec)
+
+--------------
+EXPLAIN FORMAT=TRADITIONAL
+SELECT * FROM orders WHERE status = 'RETURNED' AND payment_mode = 'COD' ORDER BY amount DESC LIMIT 10
+--------------
+
++----+-------------+--------+------------+------+---------------+------+---------+------+--------+----------+-----------------------------+
+| id | select_type | table  | partitions | type | possible_keys | key  | key_len | ref  | rows   | filtered | Extra                       |
++----+-------------+--------+------------+------+---------------+------+---------+------+--------+----------+-----------------------------+
+|  1 | SIMPLE      | orders | NULL       | ALL  | NULL          | NULL | NULL    | NULL | 100045 |     1.00 | Using where; Using filesort |
++----+-------------+--------+------------+------+---------------+------+---------+------+--------+----------+-----------------------------+
+1 row in set, 1 warning (0.000 sec)
+
+--------------
+CALL bench('SQ5', '1 original (no index)', @sq5_slow, 10)
+--------------
+
+Query OK, 0 rows affected (0.164 sec)
+
+-- composite index: equality columns first, then the ORDER BY column
+--------------
+CREATE INDEX idx_orders_status_mode_amt ON orders (status, payment_mode, amount)
+--------------
+
+Query OK, 0 rows affected (0.130 sec)
+Records: 0  Duplicates: 0  Warnings: 0
+
+--------------
+EXPLAIN FORMAT=TRADITIONAL
+SELECT * FROM orders WHERE status = 'RETURNED' AND payment_mode = 'COD' ORDER BY amount DESC LIMIT 10
+--------------
+
++----+-------------+--------+------------+------+----------------------------+----------------------------+---------+-------------+------+----------+---------------------+
+| id | select_type | table  | partitions | type | possible_keys              | key                        | key_len | ref         | rows | filtered | Extra               |
++----+-------------+--------+------------+------+----------------------------+----------------------------+---------+-------------+------+----------+---------------------+
+|  1 | SIMPLE      | orders | NULL       | ref  | idx_orders_status_mode_amt | idx_orders_status_mode_amt | 100     | const,const | 2002 |   100.00 | Backward index scan |
++----+-------------+--------+------------+------+----------------------------+----------------------------+---------+-------------+------+----------+---------------------+
+1 row in set, 1 warning (0.000 sec)
+
+--------------
+CALL bench('SQ5', '2 original + index', @sq5_slow, 10)
+--------------
+
+Query OK, 0 rows affected (0.002 sec)
+
+--------------
+EXPLAIN FORMAT=TRADITIONAL
+SELECT order_id, customer_id, order_date, amount FROM orders
+WHERE status = 'RETURNED' AND payment_mode = 'COD' ORDER BY amount DESC LIMIT 10
+--------------
+
++----+-------------+--------+------------+------+----------------------------+----------------------------+---------+-------------+------+----------+---------------------+
+| id | select_type | table  | partitions | type | possible_keys              | key                        | key_len | ref         | rows | filtered | Extra               |
++----+-------------+--------+------------+------+----------------------------+----------------------------+---------+-------------+------+----------+---------------------+
+|  1 | SIMPLE      | orders | NULL       | ref  | idx_orders_status_mode_amt | idx_orders_status_mode_amt | 100     | const,const | 2002 |   100.00 | Backward index scan |
++----+-------------+--------+------------+------+----------------------------+----------------------------+---------+-------------+------+----------+---------------------+
+1 row in set, 1 warning (0.000 sec)
+
+--------------
+CALL bench('SQ5', '3 rewritten + index', @sq5_fast, 10)
+--------------
+
+Query OK, 0 rows affected (0.002 sec)
+
+--------------
+SELECT order_id, customer_id, order_date, payment_mode, amount
+FROM orders WHERE status = 'RETURNED' AND payment_mode = 'COD'
+ORDER BY amount DESC LIMIT 10
+--------------
+
++----------+-------------+---------------------+--------------+----------+
+| order_id | customer_id | order_date          | payment_mode | amount   |
++----------+-------------+---------------------+--------------+----------+
+|    12984 |        1535 | 2023-12-27 21:43:56 | COD          | 20091.00 |
+|    89729 |        4954 | 2024-08-16 19:13:49 | COD          | 20074.00 |
+|    19722 |        3060 | 2025-04-06 02:31:10 | COD          | 20073.00 |
+|    93675 |        9269 | 2025-02-22 13:21:47 | COD          | 20068.00 |
+|    94818 |        9853 | 2024-05-06 18:15:19 | COD          | 20064.00 |
+|    19898 |        4217 | 2025-08-01 02:43:31 | COD          | 20060.00 |
+|    34617 |       15055 | 2024-09-01 12:50:53 | COD          | 20042.00 |
+|    58528 |       16010 | 2024-01-01 12:04:25 | COD          | 20038.00 |
+|     5911 |       10794 | 2023-06-22 02:48:16 | COD          | 20031.00 |
+|    50891 |       12847 | 2024-08-08 10:10:05 | COD          | 20026.00 |
++----------+-------------+---------------------+--------------+----------+
+10 rows in set (0.000 sec)
+
+-- PART D : Results
+-- D1. All measurements (result_c / result_s prove every version returns the same answer)
+--------------
+SELECT * FROM timing ORDER BY query_no, version
+--------------
+
++----------+-----------------------+------+---------+----------+-------------+
+| query_no | version               | runs | avg_ms  | result_c | result_s    |
++----------+-----------------------+------+---------+----------+-------------+
+| SQ1      | 1 original (no index) |   10 |  10.760 |     3102 | 31178193.00 |
+| SQ1      | 2 original + index    |   10 |   8.373 |     3102 | 31178193.00 |
+| SQ1      | 3 rewritten + index   |   10 |   0.399 |     3102 | 31178193.00 |
+| SQ2      | 1 original (no index) |   20 |   2.063 |        1 |     5000.00 |
+| SQ2      | 2 original + index    |   20 |   1.695 |        1 |     5000.00 |
+| SQ2      | 3 rewritten + index   |   20 |   0.011 |        1 |     5000.00 |
+| SQ3      | 1 original (no index) |    1 | 650.919 |       43 |   453391.00 |
+| SQ3      | 2 original + index    |   10 |   0.137 |       43 |   453391.00 |
+| SQ3      | 3 rewritten + index   |   10 |   0.159 |       43 |   453391.00 |
+| SQ4      | 1 original (no index) |   10 |  29.850 |       20 |   159096.00 |
+| SQ4      | 2 original + index    |   10 |  30.844 |       20 |   159096.00 |
+| SQ4      | 3 rewritten + index   |   10 |   0.642 |       20 |   159096.00 |
+| SQ5      | 1 original (no index) |   10 |  16.331 |       10 |   200567.00 |
+| SQ5      | 2 original + index    |   10 |   0.152 |       10 |   200567.00 |
+| SQ5      | 3 rewritten + index   |   10 |   0.137 |       10 |   200567.00 |
++----------+-----------------------+------+---------+----------+-------------+
+15 rows in set (0.000 sec)
+
+-- D2. Before vs after summary
+--------------
+SELECT b.query_no,
+       b.avg_ms                              AS before_ms,
+       i.avg_ms                              AS index_only_ms,
+       a.avg_ms                              AS after_ms,
+       ROUND(b.avg_ms / NULLIF(a.avg_ms,0), 1) AS speedup_x,
+       IF(b.result_c <=> a.result_c AND b.result_s <=> a.result_s, 'YES', 'NO') AS same_result
+FROM timing b
+JOIN timing i ON i.query_no = b.query_no AND i.version = '2 original + index'
+JOIN timing a ON a.query_no = b.query_no AND a.version = '3 rewritten + index'
+WHERE b.version = '1 original (no index)'
+ORDER BY b.query_no
+--------------
+
++----------+-----------+---------------+----------+-----------+-------------+
+| query_no | before_ms | index_only_ms | after_ms | speedup_x | same_result |
++----------+-----------+---------------+----------+-----------+-------------+
+| SQ1      |    10.760 |         8.373 |    0.399 |      27.0 | YES         |
+| SQ2      |     2.063 |         1.695 |    0.011 |     187.5 | YES         |
+| SQ3      |   650.919 |         0.137 |    0.159 |    4093.8 | YES         |
+| SQ4      |    29.850 |        30.844 |    0.642 |      46.5 | YES         |
+| SQ5      |    16.331 |         0.152 |    0.137 |     119.2 | YES         |
++----------+-----------+---------------+----------+-----------+-------------+
+5 rows in set (0.000 sec)
+
+-- D3. Indexes created during the optimization
+--------------
+SELECT TABLE_NAME, INDEX_NAME, GROUP_CONCAT(COLUMN_NAME ORDER BY SEQ_IN_INDEX) AS columns_in_order
+FROM information_schema.STATISTICS
+WHERE TABLE_SCHEMA = 'shop_db' AND INDEX_NAME <> 'PRIMARY'
+GROUP BY TABLE_NAME, INDEX_NAME
+--------------
+
++------------+----------------------------+----------------------------+
+| TABLE_NAME | INDEX_NAME                 | columns_in_order           |
++------------+----------------------------+----------------------------+
+| customers  | idx_customers_city_sign    | city,signup_date           |
+| customers  | idx_customers_phone        | phone                      |
+| orders     | idx_orders_cust_amount     | customer_id,amount         |
+| orders     | idx_orders_date            | order_date                 |
+| orders     | idx_orders_status_mode_amt | status,payment_mode,amount |
++------------+----------------------------+----------------------------+
+5 rows in set (0.000 sec)

@@ -1,0 +1,596 @@
+-- Output of exp06_procedures_triggers.sql
+
+-- Experiment 6: stored procedure and triggers
+
+-- uses company_db (run exp 3 first, it also resets the data)
+--------------
+USE company_db
+--------------
+
+Query OK, 0 rows affected (0.000 sec)
+
+-- PART A : Log / audit tables
+--------------
+DROP TABLE IF EXISTS transfer_log
+--------------
+
+Query OK, 0 rows affected, 1 warning (0.000 sec)
+
+--------------
+DROP TABLE IF EXISTS employee_audit
+--------------
+
+Query OK, 0 rows affected, 1 warning (0.000 sec)
+
+--------------
+CREATE TABLE transfer_log (
+    log_id        INT AUTO_INCREMENT PRIMARY KEY,
+    emp_id        INT NOT NULL,
+    old_dept_id   INT,
+    new_dept_id   INT NOT NULL,
+    old_manager   INT,
+    new_manager   INT,
+    projects_released INT NOT NULL DEFAULT 0,
+    transferred_by VARCHAR(80) NOT NULL,
+    transferred_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+)
+--------------
+
+Query OK, 0 rows affected (0.002 sec)
+
+--------------
+CREATE TABLE employee_audit (
+    audit_id    INT AUTO_INCREMENT PRIMARY KEY,
+    emp_id      INT NOT NULL,
+    action      ENUM('INSERT','UPDATE','DELETE') NOT NULL,
+    column_name VARCHAR(30),
+    old_value   VARCHAR(100),
+    new_value   VARCHAR(100),
+    changed_by  VARCHAR(80) NOT NULL,
+    changed_at  DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+)
+--------------
+
+Query OK, 0 rows affected (0.001 sec)
+
+-- PART B : Stored procedure transfer_employee(emp_id, new_dept_id)
+--------------
+DROP PROCEDURE IF EXISTS transfer_employee
+--------------
+
+Query OK, 0 rows affected, 1 warning (0.000 sec)
+
+--------------
+CREATE PROCEDURE transfer_employee(IN p_emp_id INT, IN p_new_dept_id INT)
+BEGIN
+    DECLARE v_old_dept    INT;
+    DECLARE v_old_manager INT;
+    DECLARE v_new_manager INT;
+    DECLARE v_reports     INT;
+    DECLARE v_released    INT DEFAULT 0;
+    DECLARE v_count       INT;
+
+    -- if any error comes, rollback and show the error
+    DECLARE EXIT HANDLER FOR SQLEXCEPTION
+    BEGIN
+        ROLLBACK;
+        RESIGNAL;
+    END;
+
+    -- 1. Parameter validation
+    IF p_emp_id IS NULL OR p_new_dept_id IS NULL THEN
+        SIGNAL SQLSTATE '45000'
+            SET MESSAGE_TEXT = 'transfer_employee: emp_id and new_dept_id must not be NULL';
+    END IF;
+
+    -- 2. Employee must exist
+    SELECT COUNT(*) INTO v_count FROM employee WHERE emp_id = p_emp_id;
+    IF v_count = 0 THEN
+        SIGNAL SQLSTATE '45000'
+            SET MESSAGE_TEXT = 'transfer_employee: employee does not exist';
+    END IF;
+
+    -- 3. Target department must exist
+    SELECT COUNT(*) INTO v_count FROM department WHERE dept_id = p_new_dept_id;
+    IF v_count = 0 THEN
+        SIGNAL SQLSTATE '45000'
+            SET MESSAGE_TEXT = 'transfer_employee: target department does not exist';
+    END IF;
+
+    SELECT dept_id, manager_id INTO v_old_dept, v_old_manager
+    FROM employee WHERE emp_id = p_emp_id;
+
+    -- 4. Must actually be a change of department
+    IF v_old_dept = p_new_dept_id THEN
+        SIGNAL SQLSTATE '45000'
+            SET MESSAGE_TEXT = 'transfer_employee: employee is already in that department';
+    END IF;
+
+    -- 5. A department head cannot be transferred (department would be headless)
+    SELECT COUNT(*) INTO v_count FROM department WHERE mgr_emp_id = p_emp_id;
+    IF v_count > 0 THEN
+        SIGNAL SQLSTATE '45000'
+            SET MESSAGE_TEXT = 'transfer_employee: employee heads a department; appoint a new head first';
+    END IF;
+
+    -- 6. Employees who still have direct reports cannot be moved
+    SELECT COUNT(*) INTO v_reports FROM employee WHERE manager_id = p_emp_id;
+    IF v_reports > 0 THEN
+        SIGNAL SQLSTATE '45000'
+            SET MESSAGE_TEXT = 'transfer_employee: employee has direct reports; reassign them first';
+    END IF;
+
+    SELECT mgr_emp_id INTO v_new_manager FROM department WHERE dept_id = p_new_dept_id;
+
+    -- all checks ok, now do the transfer
+    START TRANSACTION;
+
+        -- release the employee from projects owned by the old department
+        DELETE w FROM works_on w
+        JOIN project p ON p.project_id = w.project_id
+        WHERE w.emp_id = p_emp_id AND p.dept_id = v_old_dept;
+        SET v_released = ROW_COUNT();
+
+        UPDATE employee
+        SET dept_id    = p_new_dept_id,
+            manager_id = v_new_manager          -- reports to the new department head
+        WHERE emp_id = p_emp_id;
+
+        INSERT INTO transfer_log (emp_id, old_dept_id, new_dept_id, old_manager,
+                                  new_manager, projects_released, transferred_by)
+        VALUES (p_emp_id, v_old_dept, p_new_dept_id, v_old_manager,
+                v_new_manager, v_released, CURRENT_USER());
+
+    COMMIT;
+
+    SELECT CONCAT('Employee ', p_emp_id, ' transferred from dept ', v_old_dept,
+                  ' to dept ', p_new_dept_id, ' (', v_released,
+                  ' project assignment(s) released)') AS result;
+END
+--------------
+
+Query OK, 0 rows affected (0.001 sec)
+
+-- PART C : Triggers - salary validation and audit logging
+--------------
+DROP TRIGGER IF EXISTS trg_emp_before_insert
+--------------
+
+Query OK, 0 rows affected, 1 warning (0.000 sec)
+
+--------------
+DROP TRIGGER IF EXISTS trg_emp_before_update
+--------------
+
+Query OK, 0 rows affected, 1 warning (0.000 sec)
+
+--------------
+DROP TRIGGER IF EXISTS trg_emp_after_insert
+--------------
+
+Query OK, 0 rows affected, 1 warning (0.000 sec)
+
+--------------
+DROP TRIGGER IF EXISTS trg_emp_after_update
+--------------
+
+Query OK, 0 rows affected, 1 warning (0.000 sec)
+
+--------------
+DROP TRIGGER IF EXISTS trg_emp_after_delete
+--------------
+
+Query OK, 0 rows affected, 1 warning (0.000 sec)
+
+-- Salary rules on INSERT: 15,000 <= salary <= 5,00,000
+--------------
+CREATE TRIGGER trg_emp_before_insert
+BEFORE INSERT ON employee
+FOR EACH ROW
+BEGIN
+    IF NEW.salary IS NULL OR NEW.salary < 15000 THEN
+        SIGNAL SQLSTATE '45000'
+            SET MESSAGE_TEXT = 'Salary validation: salary must be at least 15000 (minimum wage)';
+    ELSEIF NEW.salary > 500000 THEN
+        SIGNAL SQLSTATE '45000'
+            SET MESSAGE_TEXT = 'Salary validation: salary cannot exceed 500000';
+    END IF;
+END
+--------------
+
+Query OK, 0 rows affected (0.001 sec)
+
+-- Salary rules on UPDATE: same range, no pay cut, max 30% hike at once
+--------------
+CREATE TRIGGER trg_emp_before_update
+BEFORE UPDATE ON employee
+FOR EACH ROW
+BEGIN
+    IF NEW.salary <> OLD.salary THEN
+        IF NEW.salary < 15000 OR NEW.salary > 500000 THEN
+            SIGNAL SQLSTATE '45000'
+                SET MESSAGE_TEXT = 'Salary validation: salary must be between 15000 and 500000';
+        ELSEIF NEW.salary < OLD.salary THEN
+            SIGNAL SQLSTATE '45000'
+                SET MESSAGE_TEXT = 'Salary validation: salary reduction is not allowed';
+        ELSEIF NEW.salary > OLD.salary * 1.30 THEN
+            SIGNAL SQLSTATE '45000'
+                SET MESSAGE_TEXT = 'Salary validation: hike above 30% needs board approval';
+        END IF;
+    END IF;
+END
+--------------
+
+Query OK, 0 rows affected (0.001 sec)
+
+-- Audit: new employee
+--------------
+CREATE TRIGGER trg_emp_after_insert
+AFTER INSERT ON employee
+FOR EACH ROW
+BEGIN
+    INSERT INTO employee_audit (emp_id, action, column_name, old_value, new_value, changed_by)
+    VALUES (NEW.emp_id, 'INSERT', 'salary', NULL, NEW.salary, CURRENT_USER());
+END
+--------------
+
+Query OK, 0 rows affected (0.001 sec)
+
+-- Audit: salary / department / manager changes
+--------------
+CREATE TRIGGER trg_emp_after_update
+AFTER UPDATE ON employee
+FOR EACH ROW
+BEGIN
+    IF NOT (NEW.salary <=> OLD.salary) THEN
+        INSERT INTO employee_audit (emp_id, action, column_name, old_value, new_value, changed_by)
+        VALUES (NEW.emp_id, 'UPDATE', 'salary', OLD.salary, NEW.salary, CURRENT_USER());
+    END IF;
+    IF NOT (NEW.dept_id <=> OLD.dept_id) THEN
+        INSERT INTO employee_audit (emp_id, action, column_name, old_value, new_value, changed_by)
+        VALUES (NEW.emp_id, 'UPDATE', 'dept_id', OLD.dept_id, NEW.dept_id, CURRENT_USER());
+    END IF;
+    IF NOT (NEW.manager_id <=> OLD.manager_id) THEN
+        INSERT INTO employee_audit (emp_id, action, column_name, old_value, new_value, changed_by)
+        VALUES (NEW.emp_id, 'UPDATE', 'manager_id', OLD.manager_id, NEW.manager_id, CURRENT_USER());
+    END IF;
+END
+--------------
+
+Query OK, 0 rows affected (0.001 sec)
+
+-- Audit: employee removed
+--------------
+CREATE TRIGGER trg_emp_after_delete
+AFTER DELETE ON employee
+FOR EACH ROW
+BEGIN
+    INSERT INTO employee_audit (emp_id, action, column_name, old_value, new_value, changed_by)
+    VALUES (OLD.emp_id, 'DELETE', NULL,
+            CONCAT(OLD.first_name, ' ', OLD.last_name, ' / ', OLD.job_title), NULL, CURRENT_USER());
+END
+--------------
+
+Query OK, 0 rows affected (0.001 sec)
+
+-- Triggers and procedures stored in the data dictionary
+--------------
+SELECT TRIGGER_NAME, ACTION_TIMING, EVENT_MANIPULATION, EVENT_OBJECT_TABLE
+FROM information_schema.TRIGGERS
+WHERE TRIGGER_SCHEMA = 'company_db'
+ORDER BY EVENT_OBJECT_TABLE, ACTION_TIMING DESC, EVENT_MANIPULATION
+--------------
+
++-----------------------+---------------+--------------------+--------------------+
+| TRIGGER_NAME          | ACTION_TIMING | EVENT_MANIPULATION | EVENT_OBJECT_TABLE |
++-----------------------+---------------+--------------------+--------------------+
+| trg_emp_after_insert  | AFTER         | INSERT             | employee           |
+| trg_emp_after_update  | AFTER         | UPDATE             | employee           |
+| trg_emp_after_delete  | AFTER         | DELETE             | employee           |
+| trg_emp_before_insert | BEFORE        | INSERT             | employee           |
+| trg_emp_before_update | BEFORE        | UPDATE             | employee           |
++-----------------------+---------------+--------------------+--------------------+
+5 rows in set (0.000 sec)
+
+--------------
+SELECT ROUTINE_NAME, ROUTINE_TYPE, CREATED
+FROM information_schema.ROUTINES
+WHERE ROUTINE_SCHEMA = 'company_db'
+--------------
+
++-------------------+--------------+---------------------+
+| ROUTINE_NAME      | ROUTINE_TYPE | CREATED             |
++-------------------+--------------+---------------------+
+| transfer_employee | PROCEDURE    | 2026-10-10 02:11:59 |
++-------------------+--------------+---------------------+
+1 row in set (0.000 sec)
+
+-- PART D : Testing the procedure (valid case + edge cases)
+-- P1. Valid transfer: Nikhil (22, Marketing SEO Analyst) -> Sales (20)
+--------------
+SELECT emp_id, first_name, dept_id, manager_id FROM employee WHERE emp_id = 22
+--------------
+
++--------+------------+---------+------------+
+| emp_id | first_name | dept_id | manager_id |
++--------+------------+---------+------------+
+|     22 | Nikhil     |      30 |         20 |
++--------+------------+---------+------------+
+1 row in set (0.000 sec)
+
+--------------
+SELECT * FROM works_on WHERE emp_id = 22
+--------------
+
++--------+------------+------+----------------+
+| emp_id | project_id | role | hours_per_week |
++--------+------------+------+----------------+
+|     22 |        104 | SEO  |           30.0 |
++--------+------------+------+----------------+
+1 row in set (0.000 sec)
+
+--------------
+CALL transfer_employee(22, 20)
+--------------
+
++------------------------------------------------------------------------------------+
+| result                                                                             |
++------------------------------------------------------------------------------------+
+| Employee 22 transferred from dept 30 to dept 20 (1 project assignment(s) released) |
++------------------------------------------------------------------------------------+
+1 row in set (0.001 sec)
+
+Query OK, 0 rows affected (0.001 sec)
+
+--------------
+SELECT emp_id, first_name, dept_id, manager_id FROM employee WHERE emp_id = 22
+--------------
+
++--------+------------+---------+------------+
+| emp_id | first_name | dept_id | manager_id |
++--------+------------+---------+------------+
+|     22 | Nikhil     |      20 |         12 |
++--------+------------+---------+------------+
+1 row in set (0.000 sec)
+
+--------------
+SELECT * FROM works_on WHERE emp_id = 22
+--------------
+
+Empty set (0.000 sec)
+
+-- P2. Edge case: employee does not exist
+--------------
+CALL transfer_employee(999, 20)
+--------------
+
+ERROR 1644 (45000) at line 227: transfer_employee: employee does not exist
+
+-- P3. Edge case: department does not exist
+--------------
+CALL transfer_employee(10, 60)
+--------------
+
+ERROR 1644 (45000) at line 230: transfer_employee: target department does not exist
+
+-- P4. Edge case: already in the target department
+--------------
+CALL transfer_employee(10, 10)
+--------------
+
+ERROR 1644 (45000) at line 233: transfer_employee: employee is already in that department
+
+-- P5. Edge case: NULL arguments
+--------------
+CALL transfer_employee(NULL, 20)
+--------------
+
+ERROR 1644 (45000) at line 236: transfer_employee: emp_id and new_dept_id must not be NULL
+--------------
+CALL transfer_employee(10, NULL)
+--------------
+
+ERROR 1644 (45000) at line 237: transfer_employee: emp_id and new_dept_id must not be NULL
+
+-- P6. Edge case: employee is a department head (Suresh, Head of Sales)
+--------------
+CALL transfer_employee(12, 30)
+--------------
+
+ERROR 1644 (45000) at line 240: transfer_employee: employee heads a department; appoint a new head first
+
+-- P7. Edge case: employee has direct reports (Vikram, Tech Lead)
+--------------
+CALL transfer_employee(3, 40)
+--------------
+
+ERROR 1644 (45000) at line 243: transfer_employee: employee has direct reports; reassign them first
+
+-- P8. Failed calls changed nothing: only ONE row in transfer_log
+--------------
+SELECT * FROM transfer_log
+--------------
+
++--------+--------+-------------+-------------+-------------+-------------+-------------------+----------------+---------------------+
+| log_id | emp_id | old_dept_id | new_dept_id | old_manager | new_manager | projects_released | transferred_by | transferred_at      |
++--------+--------+-------------+-------------+-------------+-------------+-------------------+----------------+---------------------+
+|      1 |     22 |          30 |          20 |          20 |          12 |                 1 | root@localhost | 2026-10-10 02:11:59 |
++--------+--------+-------------+-------------+-------------+-------------+-------------------+----------------+---------------------+
+1 row in set (0.000 sec)
+
+-- P9. Another valid transfer: Meera (10, QA, Engineering) -> Finance (40)
+--------------
+CALL transfer_employee(10, 40)
+--------------
+
++------------------------------------------------------------------------------------+
+| result                                                                             |
++------------------------------------------------------------------------------------+
+| Employee 10 transferred from dept 10 to dept 40 (2 project assignment(s) released) |
++------------------------------------------------------------------------------------+
+1 row in set (0.000 sec)
+
+Query OK, 0 rows affected (0.000 sec)
+
+-- PART E : Testing the triggers
+-- T1. Valid hike of 10% for Sneha (emp 6)
+--------------
+UPDATE employee SET salary = salary * 1.10 WHERE emp_id = 6
+--------------
+
+Query OK, 1 row affected (0.000 sec)
+Rows matched: 1  Changed: 1  Warnings: 0
+
+--------------
+SELECT emp_id, first_name, salary FROM employee WHERE emp_id = 6
+--------------
+
++--------+------------+----------+
+| emp_id | first_name | salary   |
++--------+------------+----------+
+|      6 | Sneha      | 93500.00 |
++--------+------------+----------+
+1 row in set (0.000 sec)
+
+-- T2. Hike above 30% -> rejected by BEFORE UPDATE trigger
+--------------
+UPDATE employee SET salary = salary * 1.50 WHERE emp_id = 7
+--------------
+
+ERROR 1644 (45000) at line 258: Salary validation: hike above 30% needs board approval
+
+-- T3. Salary cut -> rejected
+--------------
+UPDATE employee SET salary = 70000 WHERE emp_id = 7
+--------------
+
+ERROR 1644 (45000) at line 261: Salary validation: salary reduction is not allowed
+
+-- T4. Salary above the ceiling -> rejected
+--------------
+UPDATE employee SET salary = 600000 WHERE emp_id = 1
+--------------
+
+ERROR 1644 (45000) at line 264: Salary validation: salary must be between 15000 and 500000
+
+-- T5. INSERT with salary below minimum -> rejected by BEFORE INSERT trigger
+--------------
+INSERT INTO employee VALUES
+(40,'Low','Pay','M','2002-02-02','2025-10-01','Intern',5000,'Pune',40,25)
+--------------
+
+ERROR 1644 (45000) at line 267: Salary validation: salary must be at least 15000 (minimum wage)
+
+-- T6. INSERT with negative salary -> rejected
+--------------
+INSERT INTO employee VALUES
+(41,'Neg','Pay','F','2002-02-02','2025-10-01','Intern',-100,'Pune',40,25)
+--------------
+
+ERROR 1644 (45000) at line 271: Salary validation: salary must be at least 15000 (minimum wage)
+
+-- T7. Valid INSERT -> audit row with action INSERT
+--------------
+INSERT INTO employee VALUES
+(33,'Yash','Thakur','M','2001-03-14','2025-10-01','Graduate Engineer Trainee',30000,'Pune',10,3)
+--------------
+
+Query OK, 1 row affected (0.000 sec)
+
+-- T8. Bulk raise (5%) for HR -> one audit row per employee
+--------------
+UPDATE employee SET salary = salary * 1.05 WHERE dept_id = 50
+--------------
+
+Query OK, 4 rows affected (0.000 sec)
+Rows matched: 4  Changed: 4  Warnings: 0
+
+-- T9. Statement atomicity: 40% raise for Finance fails on the first row,
+--     so no salary of Finance is changed
+--------------
+SELECT emp_id, salary FROM employee WHERE dept_id = 40
+--------------
+
++--------+-----------+
+| emp_id | salary    |
++--------+-----------+
+|     10 |  70000.00 |
+|     25 | 210000.00 |
+|     26 |  75000.00 |
+|     27 |  88000.00 |
+|     28 |  50000.00 |
++--------+-----------+
+5 rows in set (0.000 sec)
+
+--------------
+UPDATE employee SET salary = salary * 1.40 WHERE dept_id = 40
+--------------
+
+ERROR 1644 (45000) at line 284: Salary validation: hike above 30% needs board approval
+--------------
+SELECT emp_id, salary FROM employee WHERE dept_id = 40
+--------------
+
++--------+-----------+
+| emp_id | salary    |
++--------+-----------+
+|     10 |  70000.00 |
+|     25 | 210000.00 |
+|     26 |  75000.00 |
+|     27 |  88000.00 |
+|     28 |  50000.00 |
++--------+-----------+
+5 rows in set (0.000 sec)
+
+-- T10. Updating a non-salary column does not fire salary validation and
+--      is not written to the audit log (only salary/dept/manager are audited)
+--------------
+UPDATE employee SET city = 'Gurugram' WHERE emp_id = 14
+--------------
+
+Query OK, 1 row affected (0.000 sec)
+Rows matched: 1  Changed: 1  Warnings: 0
+
+-- T11. DELETE -> audit row with action DELETE
+--------------
+DELETE FROM employee WHERE emp_id = 33
+--------------
+
+Query OK, 1 row affected (0.000 sec)
+
+-- Final audit trail
+--------------
+SELECT audit_id, emp_id, action, column_name, old_value, new_value, changed_by
+FROM employee_audit ORDER BY audit_id
+--------------
+
++----------+--------+--------+-------------+-----------------------------------------+-----------+----------------+
+| audit_id | emp_id | action | column_name | old_value                               | new_value | changed_by     |
++----------+--------+--------+-------------+-----------------------------------------+-----------+----------------+
+|        1 |     22 | UPDATE | dept_id     | 30                                      | 20        | root@localhost |
+|        2 |     22 | UPDATE | manager_id  | 20                                      | 12        | root@localhost |
+|        3 |     10 | UPDATE | dept_id     | 10                                      | 40        | root@localhost |
+|        4 |     10 | UPDATE | manager_id  | 9                                       | 25        | root@localhost |
+|        5 |      6 | UPDATE | salary      | 85000.00                                | 93500.00  | root@localhost |
+|        6 |     33 | INSERT | salary      | NULL                                    | 30000.00  | root@localhost |
+|        7 |     29 | UPDATE | salary      | 170000.00                               | 178500.00 | root@localhost |
+|        8 |     30 | UPDATE | salary      | 95000.00                                | 99750.00  | root@localhost |
+|        9 |     31 | UPDATE | salary      | 55000.00                                | 57750.00  | root@localhost |
+|       10 |     32 | UPDATE | salary      | 48000.00                                | 50400.00  | root@localhost |
+|       11 |     33 | DELETE | NULL        | Yash Thakur / Graduate Engineer Trainee | NULL      | root@localhost |
++----------+--------+--------+-------------+-----------------------------------------+-----------+----------------+
+11 rows in set (0.000 sec)
+
+--------------
+SELECT log_id, emp_id, old_dept_id, new_dept_id, old_manager, new_manager,
+       projects_released, transferred_by
+FROM transfer_log
+--------------
+
++--------+--------+-------------+-------------+-------------+-------------+-------------------+----------------+
+| log_id | emp_id | old_dept_id | new_dept_id | old_manager | new_manager | projects_released | transferred_by |
++--------+--------+-------------+-------------+-------------+-------------+-------------------+----------------+
+|      1 |     22 |          30 |          20 |          20 |          12 |                 1 | root@localhost |
+|      2 |     10 |          10 |          40 |           9 |          25 |                 2 | root@localhost |
++--------+--------+-------------+-------------+-------------+-------------+-------------------+----------------+
+2 rows in set (0.000 sec)

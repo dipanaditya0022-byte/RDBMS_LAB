@@ -1,0 +1,1184 @@
+# Experiment 9 - Indexing: Railway Booking Benchmark
+
+## Aim
+
+Create a **Railway Booking** table with at least 5,000 records (50,000 are used here). Benchmark query performance **before and after** creating **single-column and composite indexes**, and use `EXPLAIN` to compare the execution plans.
+
+## Software / Tools Used
+
+MySQL Server 8.0+ (InnoDB), MySQL command-line client, VS Code
+
+## Theory
+
+* **Index:** a separate data structure (a **B+ tree** in InnoDB) that keeps the values of one or more columns in sorted order, with pointers to the rows. A lookup costs O(log n) instead of O(n) for a full table scan.
+* **Clustered index:** in InnoDB, the table itself is stored in primary-key order.
+* **Secondary index:** stores the indexed columns plus the primary key. Finding the rest of the row needs a second lookup in the clustered index.
+* **Single-column index:** for example `INDEX(train_no)`.
+* **Composite index:** for example `INDEX(train_no, journey_date)`, sorted by the first column, then the second.
+  * **Leftmost-prefix rule:** it can serve `train_no` or `train_no + journey_date`, but **not** `journey_date` alone.
+  * Put equality columns first and range or sort columns last.
+* **Covering index:** every column the query needs is inside the index, so no table lookup is required (`Extra: Using index`).
+* **Unique index:** enforces uniqueness (PNR) and gives at most one match (`type: const`).
+* **Cost of indexes:** extra disk space, and slower INSERT / UPDATE / DELETE because the indexes must be kept up to date.
+
+| `EXPLAIN` type | Meaning |
+|---|---|
+| `ALL` | Full table scan - slowest |
+| `range` | Index range scan (`BETWEEN`, `<`, `>`) |
+| `ref` | Index lookup on a non-unique value |
+| `const` | At most one row through a PRIMARY or UNIQUE key - fastest |
+
+## Table
+
+```text
+railway_booking(booking_id PK, pnr, passenger_name, age, gender, train_no, source_stn, dest_stn,
+                journey_date, travel_class, coach, seat_no, fare, booking_status, booking_time)
+train(train_no PK, train_name, source_stn, dest_stn)       -- 40 real Indian trains
+```
+
+The 50,000 bookings were generated with a recursive CTE. `CRC32(n)` hashing makes the data well spread out *and* identical on every run. The data covers 40 trains, all of 2025, 6 classes (SL/3A/2A/1A/CC/2S), and statuses CNF/RAC/WL/CAN.
+
+## Indexes Created
+
+| Index | Type | Columns | Serves |
+|---|---|---|---|
+| `idx_pnr` | single, UNIQUE | `pnr` | Q1 PNR enquiry |
+| `idx_train_no` | single | `train_no` | Q2 all bookings of a train |
+| `idx_train_date` | composite | `train_no, journey_date` | Q3 chart preparation |
+| `idx_route_date` | composite | `source_stn, dest_stn, journey_date` | Q4 route search |
+| `idx_date_status` | composite | `journey_date, booking_status` | Q5 waiting list for a date |
+| `idx_train_btime` | composite | `train_no, booking_time` | Q6 latest bookings (avoids filesort) |
+
+## Procedure
+
+1. Created the tables with **only a primary key**, and generated 50,000 rows.
+2. Ran `EXPLAIN` (and `EXPLAIN ANALYZE`) on 6 typical queries, and counted the rows read using the `Handler_read_*` status counters.
+3. Benchmarked each query with the `bench` procedure: 1 warm-up run and 20 timed runs, averaged in microseconds using `NOW(6)`.
+4. Created 2 single-column and 4 composite indexes, then ran `ANALYZE TABLE`.
+5. Repeated the `EXPLAIN` and benchmarks, and compared the results.
+6. Demonstrated the leftmost-prefix rule, a covering index, `IGNORE INDEX`, and a function that prevents index use.
+
+## How to Run
+
+```bash
+mysql -u root -t -vvv --force < exp09_railway_indexing.sql
+```
+
+## Source Code
+
+File: [exp09_railway_indexing.sql](exp09_railway_indexing.sql)
+
+```sql
+-- Experiment 9: railway booking table (50000 rows) and indexing
+
+DROP DATABASE IF EXISTS railway_db;
+CREATE DATABASE railway_db;
+USE railway_db;
+
+-- PART A : Table WITHOUT any secondary index (only the primary key)
+CREATE TABLE train (
+    train_no    INT PRIMARY KEY,
+    train_name  VARCHAR(50) NOT NULL,
+    source_stn  CHAR(4) NOT NULL,
+    dest_stn    CHAR(4) NOT NULL
+);
+
+INSERT INTO train VALUES
+(12951,'Mumbai Rajdhani Express','MMCT','NDLS'),(12952,'New Delhi Rajdhani','NDLS','MMCT'),
+(12301,'Howrah Rajdhani Express','HWH','NDLS'), (12302,'New Delhi Howrah Rajdhani','NDLS','HWH'),
+(12627,'Karnataka Express','SBC','NDLS'),       (12628,'Karnataka Express','NDLS','SBC'),
+(12621,'Tamil Nadu Express','MAS','NDLS'),      (12622,'Tamil Nadu Express','NDLS','MAS'),
+(12009,'Shatabdi Express','MMCT','ADI'),        (12010,'Shatabdi Express','ADI','MMCT'),
+(12002,'Bhopal Shatabdi','NDLS','RKMP'),        (12001,'Bhopal Shatabdi','RKMP','NDLS'),
+(22691,'Rajdhani Express','SBC','NZM'),         (22692,'Rajdhani Express','NZM','SBC'),
+(12259,'Duronto Express','SDAH','NDLS'),        (12260,'Duronto Express','NDLS','SDAH'),
+(12723,'Telangana Express','HYB','NDLS'),       (12724,'Telangana Express','NDLS','HYB'),
+(16345,'Netravati Express','LTT','TVC'),        (16346,'Netravati Express','TVC','LTT'),
+(12137,'Punjab Mail','CSMT','FZR'),             (12138,'Punjab Mail','FZR','CSMT'),
+(12859,'Gitanjali Express','CSMT','HWH'),       (12860,'Gitanjali Express','HWH','CSMT'),
+(12433,'Chennai Rajdhani','MAS','NZM'),         (12434,'Chennai Rajdhani','NZM','MAS'),
+(22439,'Vande Bharat Express','NDLS','SVDK'),   (22440,'Vande Bharat Express','SVDK','NDLS'),
+(20901,'Vande Bharat Express','MMCT','GNC'),    (20902,'Vande Bharat Express','GNC','MMCT'),
+(12213,'Duronto Express','DEE','YPR'),          (12214,'Duronto Express','YPR','DEE'),
+(12801,'Purushottam Express','PURI','NDLS'),    (12802,'Purushottam Express','NDLS','PURI'),
+(12423,'Dibrugarh Rajdhani','DBRT','NDLS'),     (12424,'Dibrugarh Rajdhani','NDLS','DBRT'),
+(11077,'Jhelum Express','PUNE','JAT'),          (11078,'Jhelum Express','JAT','PUNE'),
+(12925,'Paschim Express','BDTS','ASR'),         (12926,'Paschim Express','ASR','BDTS');
+
+CREATE TABLE railway_booking (
+    booking_id      INT AUTO_INCREMENT PRIMARY KEY,
+    pnr             CHAR(10)     NOT NULL,
+    passenger_name  VARCHAR(40)  NOT NULL,
+    age             TINYINT      NOT NULL,
+    gender          CHAR(1)      NOT NULL,
+    train_no        INT          NOT NULL,
+    source_stn      CHAR(4)      NOT NULL,
+    dest_stn        CHAR(4)      NOT NULL,
+    journey_date    DATE         NOT NULL,
+    travel_class    CHAR(2)      NOT NULL,
+    coach           VARCHAR(4)   NOT NULL,
+    seat_no         SMALLINT     NOT NULL,
+    fare            DECIMAL(8,2) NOT NULL,
+    booking_status  ENUM('CNF','RAC','WL','CAN') NOT NULL,
+    booking_time    DATETIME     NOT NULL
+);
+
+-- PART B : Generate 50,000 bookings with a recursive CTE
+--          (used CRC32 instead of RAND so data comes same every time)
+SET SESSION cte_max_recursion_depth = 100000;
+
+INSERT INTO railway_booking (pnr, passenger_name, age, gender, train_no, source_stn, dest_stn,
+                             journey_date, travel_class, coach, seat_no, fare,
+                             booking_status, booking_time)
+WITH RECURSIVE seq(n) AS (
+    SELECT 1 UNION ALL SELECT n + 1 FROM seq WHERE n < 50000
+),
+tr AS (
+    SELECT train_no, source_stn, dest_stn,
+           ROW_NUMBER() OVER (ORDER BY train_no) - 1 AS idx
+    FROM train
+),
+r AS (
+    SELECT n,
+           CRC32(CONCAT(n, '-train'))  % 40  AS t_idx,
+           CRC32(CONCAT(n, '-date'))   % 365 AS d_off,
+           CRC32(CONCAT(n, '-class'))  % 6   AS c_idx,
+           CRC32(CONCAT(n, '-status')) % 100 AS s_pct,
+           CRC32(CONCAT(n, '-fname'))  % 20  AS fn_idx,
+           CRC32(CONCAT(n, '-lname'))  % 15  AS ln_idx,
+           CRC32(CONCAT(n, '-age'))    % 75 + 5 AS age
+    FROM seq
+)
+SELECT CONCAT(LPAD(4000000000 + n * 97, 10, '0')),
+       CONCAT(ELT(fn_idx + 1, 'Aarav','Vivaan','Aditya','Vihaan','Arjun','Sai','Reyansh','Krishna',
+                  'Ishaan','Rohan','Ananya','Diya','Saanvi','Aadhya','Pari','Myra','Kavya',
+                  'Priya','Sneha','Meera'), ' ',
+              ELT(ln_idx + 1, 'Sharma','Verma','Patel','Reddy','Iyer','Nair','Singh','Gupta',
+                  'Joshi','Kulkarni','Mehta','Rao','Das','Banerjee','Khan')),
+       age,
+       IF(fn_idx < 10, 'M', 'F'),
+       tr.train_no, tr.source_stn, tr.dest_stn,
+       DATE_ADD('2025-01-01', INTERVAL d_off DAY),
+       ELT(c_idx + 1, 'SL','3A','2A','1A','CC','2S'),
+       CONCAT(ELT(c_idx + 1, 'S','B','A','H','C','D'), 1 + n % 12),
+       1 + n % 72,
+       ELT(c_idx + 1, 650, 1750, 2500, 4200, 1300, 280) + (n % 50) * 5,
+       CASE WHEN s_pct < 78 THEN 'CNF' WHEN s_pct < 86 THEN 'RAC'
+            WHEN s_pct < 95 THEN 'WL'  ELSE 'CAN' END,
+       DATE_SUB(DATE_ADD('2025-01-01', INTERVAL d_off DAY), INTERVAL (n % 120) DAY)
+         + INTERVAL (n % 86400) SECOND
+FROM r JOIN tr ON tr.idx = r.t_idx;
+
+ANALYZE TABLE railway_booking;
+
+-- Verify the generated data
+SELECT COUNT(*) AS total_bookings, COUNT(DISTINCT train_no) AS trains,
+       MIN(journey_date) AS first_journey, MAX(journey_date) AS last_journey
+FROM railway_booking;
+
+SELECT * FROM railway_booking LIMIT 5;
+
+SELECT booking_status, COUNT(*) AS bookings FROM railway_booking GROUP BY booking_status;
+
+SHOW INDEX FROM railway_booking;
+
+-- PART C : Benchmark helper - runs a query N times and stores avg time
+CREATE TABLE benchmark (
+    query_no   VARCHAR(4),
+    query_desc VARCHAR(80),
+    phase      ENUM('BEFORE','AFTER'),
+    runs       INT,
+    avg_ms     DECIMAL(10,3),
+    PRIMARY KEY (query_no, phase)
+);
+
+DELIMITER $$
+CREATE PROCEDURE bench(IN p_no VARCHAR(4), IN p_desc VARCHAR(80), IN p_phase VARCHAR(6),
+                       IN p_sql TEXT, IN p_runs INT)
+BEGIN
+    DECLARE i INT DEFAULT 0;
+    DECLARE t0 DATETIME(6);
+    SET @bench_sql = p_sql;
+    PREPARE s FROM @bench_sql;
+    EXECUTE s;                                  -- warm-up run (loads pages into buffer pool)
+    SET t0 = NOW(6);
+    WHILE i < p_runs DO
+        EXECUTE s;
+        SET i = i + 1;
+    END WHILE;
+    REPLACE INTO benchmark VALUES (p_no, p_desc, p_phase, p_runs,
+        TIMESTAMPDIFF(MICROSECOND, t0, NOW(6)) / 1000 / p_runs);
+    DEALLOCATE PREPARE s;
+END$$
+DELIMITER ;
+
+-- The 6 benchmark queries (each returns COUNT and SUM INTO variables so that
+-- the benchmark measures query time, not the time to print rows)
+SET @q1 = "SELECT COUNT(*), SUM(fare) INTO @c, @s FROM railway_booking WHERE pnr = '4000485097'";
+SET @q2 = "SELECT COUNT(*), SUM(fare) INTO @c, @s FROM railway_booking WHERE train_no = 12951";
+SET @q3 = "SELECT COUNT(*), SUM(fare) INTO @c, @s FROM railway_booking WHERE train_no = 12951 AND journey_date = '2025-06-15'";
+SET @q4 = "SELECT COUNT(*), SUM(fare) INTO @c, @s FROM railway_booking WHERE source_stn = 'NDLS' AND dest_stn = 'MMCT' AND journey_date BETWEEN '2025-10-01' AND '2025-10-31'";
+SET @q5 = "SELECT COUNT(*), SUM(fare) INTO @c, @s FROM railway_booking WHERE journey_date = '2025-06-15' AND booking_status = 'WL'";
+SET @q6 = "SELECT COUNT(*), SUM(fare) INTO @c, @s FROM (SELECT fare FROM railway_booking WHERE train_no = 12627 ORDER BY booking_time DESC LIMIT 10) t";
+
+-- PART D : BEFORE indexing - execution plans and timings
+
+-- Q1. Lookup by PNR
+SELECT booking_id, pnr, passenger_name, train_no, journey_date, booking_status
+FROM railway_booking WHERE pnr = '4000485097';
+EXPLAIN FORMAT=TRADITIONAL SELECT * FROM railway_booking WHERE pnr = '4000485097';
+
+-- Q2. All bookings of one train
+EXPLAIN FORMAT=TRADITIONAL SELECT * FROM railway_booking WHERE train_no = 12951;
+
+-- Q3. Train + journey date (chart preparation)
+SELECT travel_class, COUNT(*) AS passengers
+FROM railway_booking WHERE train_no = 12951 AND journey_date = '2025-06-15'
+GROUP BY travel_class;
+EXPLAIN FORMAT=TRADITIONAL SELECT * FROM railway_booking WHERE train_no = 12951 AND journey_date = '2025-06-15';
+
+-- Q4. Route search: source, destination and date range
+EXPLAIN FORMAT=TRADITIONAL SELECT * FROM railway_booking
+WHERE source_stn = 'NDLS' AND dest_stn = 'MMCT' AND journey_date BETWEEN '2025-10-01' AND '2025-10-31';
+
+-- Q5. Waiting-list passengers on a date
+EXPLAIN FORMAT=TRADITIONAL SELECT * FROM railway_booking WHERE journey_date = '2025-06-15' AND booking_status = 'WL';
+
+-- Q6. Latest 10 bookings of a train (ORDER BY + LIMIT)
+EXPLAIN FORMAT=TRADITIONAL SELECT * FROM railway_booking WHERE train_no = 12627 ORDER BY booking_time DESC LIMIT 10;
+
+-- EXPLAIN ANALYZE shows the real work done for Q3 (full table scan)
+EXPLAIN ANALYZE SELECT * FROM railway_booking WHERE train_no = 12951 AND journey_date = '2025-06-15';
+
+-- Handler counters: how many rows did InnoDB read for Q2?
+FLUSH STATUS;
+SELECT COUNT(*) FROM railway_booking WHERE train_no = 12951;
+SHOW SESSION STATUS WHERE Variable_name IN ('Handler_read_rnd_next','Handler_read_key','Handler_read_next');
+
+CALL bench('Q1', 'PNR lookup',                      'BEFORE', @q1, 20);
+CALL bench('Q2', 'train_no = ?',                    'BEFORE', @q2, 20);
+CALL bench('Q3', 'train_no = ? AND journey_date = ?','BEFORE', @q3, 20);
+CALL bench('Q4', 'source, dest, date range',        'BEFORE', @q4, 20);
+CALL bench('Q5', 'journey_date = ? AND status = WL','BEFORE', @q5, 20);
+CALL bench('Q6', 'train_no = ? ORDER BY time LIMIT','BEFORE', @q6, 20);
+
+SELECT * FROM benchmark WHERE phase = 'BEFORE';
+
+-- PART E : Create single-column and composite indexes
+-- single-column indexes
+CREATE UNIQUE INDEX idx_pnr      ON railway_booking (pnr);
+CREATE INDEX        idx_train_no ON railway_booking (train_no);
+-- composite indexes
+CREATE INDEX idx_train_date      ON railway_booking (train_no, journey_date);
+CREATE INDEX idx_route_date      ON railway_booking (source_stn, dest_stn, journey_date);
+CREATE INDEX idx_date_status     ON railway_booking (journey_date, booking_status);
+CREATE INDEX idx_train_btime     ON railway_booking (train_no, booking_time);
+
+ANALYZE TABLE railway_booking;
+
+SELECT INDEX_NAME, GROUP_CONCAT(COLUMN_NAME ORDER BY SEQ_IN_INDEX) AS columns_in_order,
+       IF(NON_UNIQUE = 0, 'UNIQUE', 'NON-UNIQUE') AS uniqueness
+FROM information_schema.STATISTICS
+WHERE TABLE_SCHEMA = 'railway_db' AND TABLE_NAME = 'railway_booking'
+GROUP BY INDEX_NAME, NON_UNIQUE;
+
+-- Space used by the indexes
+SELECT index_name, ROUND(stat_value * @@innodb_page_size / 1024, 0) AS size_kb
+FROM mysql.innodb_index_stats
+WHERE database_name = 'railway_db' AND table_name = 'railway_booking' AND stat_name = 'size';
+
+-- PART F : AFTER indexing - execution plans and timings
+EXPLAIN FORMAT=TRADITIONAL SELECT * FROM railway_booking WHERE pnr = '4000485097';
+EXPLAIN FORMAT=TRADITIONAL SELECT * FROM railway_booking WHERE train_no = 12951;
+EXPLAIN FORMAT=TRADITIONAL SELECT * FROM railway_booking WHERE train_no = 12951 AND journey_date = '2025-06-15';
+EXPLAIN FORMAT=TRADITIONAL SELECT * FROM railway_booking
+WHERE source_stn = 'NDLS' AND dest_stn = 'MMCT' AND journey_date BETWEEN '2025-10-01' AND '2025-10-31';
+EXPLAIN FORMAT=TRADITIONAL SELECT * FROM railway_booking WHERE journey_date = '2025-06-15' AND booking_status = 'WL';
+EXPLAIN FORMAT=TRADITIONAL SELECT * FROM railway_booking WHERE train_no = 12627 ORDER BY booking_time DESC LIMIT 10;
+
+EXPLAIN ANALYZE SELECT * FROM railway_booking WHERE train_no = 12951 AND journey_date = '2025-06-15';
+
+FLUSH STATUS;
+SELECT COUNT(*) FROM railway_booking WHERE train_no = 12951;
+SHOW SESSION STATUS WHERE Variable_name IN ('Handler_read_rnd_next','Handler_read_key','Handler_read_next');
+
+CALL bench('Q1', 'PNR lookup',                      'AFTER', @q1, 20);
+CALL bench('Q2', 'train_no = ?',                    'AFTER', @q2, 20);
+CALL bench('Q3', 'train_no = ? AND journey_date = ?','AFTER', @q3, 20);
+CALL bench('Q4', 'source, dest, date range',        'AFTER', @q4, 20);
+CALL bench('Q5', 'journey_date = ? AND status = WL','AFTER', @q5, 20);
+CALL bench('Q6', 'train_no = ? ORDER BY time LIMIT','AFTER', @q6, 20);
+
+-- PART G : Comparison
+SELECT b.query_no, b.query_desc,
+       b.avg_ms AS before_ms, a.avg_ms AS after_ms,
+       ROUND(b.avg_ms / NULLIF(a.avg_ms, 0), 1) AS speedup_x
+FROM benchmark b
+JOIN benchmark a ON a.query_no = b.query_no AND a.phase = 'AFTER'
+WHERE b.phase = 'BEFORE'
+ORDER BY b.query_no;
+
+-- PART H : Composite index rules (leftmost prefix)
+-- H1. Uses idx_route_date: leftmost column source_stn is present
+EXPLAIN FORMAT=TRADITIONAL SELECT * FROM railway_booking WHERE source_stn = 'NDLS';
+-- H2. Cannot use idx_route_date: leftmost column missing -> full scan
+EXPLAIN FORMAT=TRADITIONAL SELECT * FROM railway_booking WHERE dest_stn = 'MMCT';
+-- H3. Covering index: all needed columns are inside idx_train_date -> "Using index"
+EXPLAIN FORMAT=TRADITIONAL SELECT train_no, journey_date FROM railway_booking WHERE train_no = 12951;
+-- H4. Index forced off for comparison
+EXPLAIN FORMAT=TRADITIONAL SELECT * FROM railway_booking IGNORE INDEX (idx_train_date, idx_train_no, idx_train_btime, idx_date_status)
+WHERE train_no = 12951 AND journey_date = '2025-06-15';
+-- H5. A function on the indexed column prevents index use
+EXPLAIN FORMAT=TRADITIONAL SELECT * FROM railway_booking WHERE MONTH(journey_date) = 6 AND YEAR(journey_date) = 2025 AND booking_status = 'WL';
+```
+
+## Output
+
+### Before vs after comparison (summary)
+
+```text
+-- PART G : Comparison
+--------------
+SELECT b.query_no, b.query_desc,
+       b.avg_ms AS before_ms, a.avg_ms AS after_ms,
+       ROUND(b.avg_ms / NULLIF(a.avg_ms, 0), 1) AS speedup_x
+FROM benchmark b
+JOIN benchmark a ON a.query_no = b.query_no AND a.phase = 'AFTER'
+WHERE b.phase = 'BEFORE'
+ORDER BY b.query_no
+--------------
+
++----------+-----------------------------------+-----------+----------+-----------+
+| query_no | query_desc                        | before_ms | after_ms | speedup_x |
++----------+-----------------------------------+-----------+----------+-----------+
+| Q1       | PNR lookup                        |     6.253 |    0.007 |     893.3 |
+| Q2       | train_no = ?                      |     4.991 |    0.590 |       8.5 |
+| Q3       | train_no = ? AND journey_date = ? |     5.457 |    0.016 |     341.1 |
+| Q4       | source, dest, date range          |     7.351 |    0.088 |      83.5 |
+| Q5       | journey_date = ? AND status = WL  |     5.852 |    0.016 |     365.8 |
+| Q6       | train_no = ? ORDER BY time LIMIT  |     6.175 |    0.071 |      87.0 |
++----------+-----------------------------------+-----------+----------+-----------+
+6 rows in set (0.000 sec)
+```
+
+### Complete output
+
+File: [output.txt](output.txt)
+
+```text
+-- Output of exp09_railway_indexing.sql
+
+-- Experiment 9: railway booking table (50000 rows) and indexing
+
+--------------
+DROP DATABASE IF EXISTS railway_db
+--------------
+
+Query OK, 3 rows affected (0.012 sec)
+
+--------------
+CREATE DATABASE railway_db
+--------------
+
+Query OK, 1 row affected (0.001 sec)
+
+--------------
+USE railway_db
+--------------
+
+Query OK, 0 rows affected (0.000 sec)
+
+-- PART A : Table WITHOUT any secondary index (only the primary key)
+--------------
+CREATE TABLE train (
+    train_no    INT PRIMARY KEY,
+    train_name  VARCHAR(50) NOT NULL,
+    source_stn  CHAR(4) NOT NULL,
+    dest_stn    CHAR(4) NOT NULL
+)
+--------------
+
+Query OK, 0 rows affected (0.004 sec)
+
+--------------
+INSERT INTO train VALUES
+(12951,'Mumbai Rajdhani Express','MMCT','NDLS'),(12952,'New Delhi Rajdhani','NDLS','MMCT'),
+(12301,'Howrah Rajdhani Express','HWH','NDLS'), (12302,'New Delhi Howrah Rajdhani','NDLS','HWH'),
+(12627,'Karnataka Express','SBC','NDLS'),       (12628,'Karnataka Express','NDLS','SBC'),
+(12621,'Tamil Nadu Express','MAS','NDLS'),      (12622,'Tamil Nadu Express','NDLS','MAS'),
+(12009,'Shatabdi Express','MMCT','ADI'),        (12010,'Shatabdi Express','ADI','MMCT'),
+(12002,'Bhopal Shatabdi','NDLS','RKMP'),        (12001,'Bhopal Shatabdi','RKMP','NDLS'),
+(22691,'Rajdhani Express','SBC','NZM'),         (22692,'Rajdhani Express','NZM','SBC'),
+(12259,'Duronto Express','SDAH','NDLS'),        (12260,'Duronto Express','NDLS','SDAH'),
+(12723,'Telangana Express','HYB','NDLS'),       (12724,'Telangana Express','NDLS','HYB'),
+(16345,'Netravati Express','LTT','TVC'),        (16346,'Netravati Express','TVC','LTT'),
+(12137,'Punjab Mail','CSMT','FZR'),             (12138,'Punjab Mail','FZR','CSMT'),
+(12859,'Gitanjali Express','CSMT','HWH'),       (12860,'Gitanjali Express','HWH','CSMT'),
+(12433,'Chennai Rajdhani','MAS','NZM'),         (12434,'Chennai Rajdhani','NZM','MAS'),
+(22439,'Vande Bharat Express','NDLS','SVDK'),   (22440,'Vande Bharat Express','SVDK','NDLS'),
+(20901,'Vande Bharat Express','MMCT','GNC'),    (20902,'Vande Bharat Express','GNC','MMCT'),
+(12213,'Duronto Express','DEE','YPR'),          (12214,'Duronto Express','YPR','DEE'),
+(12801,'Purushottam Express','PURI','NDLS'),    (12802,'Purushottam Express','NDLS','PURI'),
+(12423,'Dibrugarh Rajdhani','DBRT','NDLS'),     (12424,'Dibrugarh Rajdhani','NDLS','DBRT'),
+(11077,'Jhelum Express','PUNE','JAT'),          (11078,'Jhelum Express','JAT','PUNE'),
+(12925,'Paschim Express','BDTS','ASR'),         (12926,'Paschim Express','ASR','BDTS')
+--------------
+
+Query OK, 40 rows affected (0.001 sec)
+Records: 40  Duplicates: 0  Warnings: 0
+
+--------------
+CREATE TABLE railway_booking (
+    booking_id      INT AUTO_INCREMENT PRIMARY KEY,
+    pnr             CHAR(10)     NOT NULL,
+    passenger_name  VARCHAR(40)  NOT NULL,
+    age             TINYINT      NOT NULL,
+    gender          CHAR(1)      NOT NULL,
+    train_no        INT          NOT NULL,
+    source_stn      CHAR(4)      NOT NULL,
+    dest_stn        CHAR(4)      NOT NULL,
+    journey_date    DATE         NOT NULL,
+    travel_class    CHAR(2)      NOT NULL,
+    coach           VARCHAR(4)   NOT NULL,
+    seat_no         SMALLINT     NOT NULL,
+    fare            DECIMAL(8,2) NOT NULL,
+    booking_status  ENUM('CNF','RAC','WL','CAN') NOT NULL,
+    booking_time    DATETIME     NOT NULL
+)
+--------------
+
+Query OK, 0 rows affected (0.005 sec)
+
+-- PART B : Generate 50,000 bookings with a recursive CTE
+--          (used CRC32 instead of RAND so data comes same every time)
+--------------
+SET SESSION cte_max_recursion_depth = 100000
+--------------
+
+Query OK, 0 rows affected (0.000 sec)
+
+--------------
+INSERT INTO railway_booking (pnr, passenger_name, age, gender, train_no, source_stn, dest_stn,
+                             journey_date, travel_class, coach, seat_no, fare,
+                             booking_status, booking_time)
+WITH RECURSIVE seq(n) AS (
+    SELECT 1 UNION ALL SELECT n + 1 FROM seq WHERE n < 50000
+),
+tr AS (
+    SELECT train_no, source_stn, dest_stn,
+           ROW_NUMBER() OVER (ORDER BY train_no) - 1 AS idx
+    FROM train
+),
+r AS (
+    SELECT n,
+           CRC32(CONCAT(n, '-train'))  % 40  AS t_idx,
+           CRC32(CONCAT(n, '-date'))   % 365 AS d_off,
+           CRC32(CONCAT(n, '-class'))  % 6   AS c_idx,
+           CRC32(CONCAT(n, '-status')) % 100 AS s_pct,
+           CRC32(CONCAT(n, '-fname'))  % 20  AS fn_idx,
+           CRC32(CONCAT(n, '-lname'))  % 15  AS ln_idx,
+           CRC32(CONCAT(n, '-age'))    % 75 + 5 AS age
+    FROM seq
+)
+SELECT CONCAT(LPAD(4000000000 + n * 97, 10, '0')),
+       CONCAT(ELT(fn_idx + 1, 'Aarav','Vivaan','Aditya','Vihaan','Arjun','Sai','Reyansh','Krishna',
+                  'Ishaan','Rohan','Ananya','Diya','Saanvi','Aadhya','Pari','Myra','Kavya',
+                  'Priya','Sneha','Meera'), ' ',
+              ELT(ln_idx + 1, 'Sharma','Verma','Patel','Reddy','Iyer','Nair','Singh','Gupta',
+                  'Joshi','Kulkarni','Mehta','Rao','Das','Banerjee','Khan')),
+       age,
+       IF(fn_idx < 10, 'M', 'F'),
+       tr.train_no, tr.source_stn, tr.dest_stn,
+       DATE_ADD('2025-01-01', INTERVAL d_off DAY),
+       ELT(c_idx + 1, 'SL','3A','2A','1A','CC','2S'),
+       CONCAT(ELT(c_idx + 1, 'S','B','A','H','C','D'), 1 + n % 12),
+       1 + n % 72,
+       ELT(c_idx + 1, 650, 1750, 2500, 4200, 1300, 280) + (n % 50) * 5,
+       CASE WHEN s_pct < 78 THEN 'CNF' WHEN s_pct < 86 THEN 'RAC'
+            WHEN s_pct < 95 THEN 'WL'  ELSE 'CAN' END,
+       DATE_SUB(DATE_ADD('2025-01-01', INTERVAL d_off DAY), INTERVAL (n % 120) DAY)
+         + INTERVAL (n % 86400) SECOND
+FROM r JOIN tr ON tr.idx = r.t_idx
+--------------
+
+Query OK, 50000 rows affected (0.270 sec)
+Records: 50000  Duplicates: 0  Warnings: 0
+
+--------------
+ANALYZE TABLE railway_booking
+--------------
+
++----------------------------+---------+----------+----------+
+| Table                      | Op      | Msg_type | Msg_text |
++----------------------------+---------+----------+----------+
+| railway_db.railway_booking | analyze | status   | OK       |
++----------------------------+---------+----------+----------+
+1 row in set (0.001 sec)
+
+-- Verify the generated data
+--------------
+SELECT COUNT(*) AS total_bookings, COUNT(DISTINCT train_no) AS trains,
+       MIN(journey_date) AS first_journey, MAX(journey_date) AS last_journey
+FROM railway_booking
+--------------
+
++----------------+--------+---------------+--------------+
+| total_bookings | trains | first_journey | last_journey |
++----------------+--------+---------------+--------------+
+|          50000 |     40 | 2025-01-01    | 2025-12-31   |
++----------------+--------+---------------+--------------+
+1 row in set (0.007 sec)
+
+--------------
+SELECT * FROM railway_booking LIMIT 5
+--------------
+
++------------+------------+----------------+-----+--------+----------+------------+----------+--------------+--------------+-------+---------+---------+----------------+---------------------+
+| booking_id | pnr        | passenger_name | age | gender | train_no | source_stn | dest_stn | journey_date | travel_class | coach | seat_no | fare    | booking_status | booking_time        |
++------------+------------+----------------+-----+--------+----------+------------+----------+--------------+--------------+-------+---------+---------+----------------+---------------------+
+|          1 | 4000000097 | Vihaan Nair    |  20 | M      |    12423 | DBRT       | NDLS     | 2025-03-10   | SL           | S2    |       2 |  655.00 | RAC            | 2025-03-09 00:00:01 |
+|          2 | 4000000194 | Ananya Gupta   |  32 | F      |    12622 | NDLS       | MAS      | 2025-10-16   | 3A           | B3    |       3 | 1760.00 | CNF            | 2025-10-14 00:00:02 |
+|          3 | 4000000291 | Ananya Sharma  |  19 | F      |    22692 | NZM        | SBC      | 2025-11-23   | 2S           | D4    |       4 |  295.00 | CNF            | 2025-11-20 00:00:03 |
+|          4 | 4000000388 | Kavya Joshi    |  24 | F      |    12214 | YPR        | DEE      | 2025-12-09   | 2S           | D5    |       5 |  300.00 | CNF            | 2025-12-05 00:00:04 |
+|          5 | 4000000485 | Kavya Reddy    |  34 | F      |    12628 | NDLS       | SBC      | 2025-07-03   | 1A           | H6    |       6 | 4225.00 | CNF            | 2025-06-28 00:00:05 |
++------------+------------+----------------+-----+--------+----------+------------+----------+--------------+--------------+-------+---------+---------+----------------+---------------------+
+5 rows in set (0.000 sec)
+
+--------------
+SELECT booking_status, COUNT(*) AS bookings FROM railway_booking GROUP BY booking_status
+--------------
+
++----------------+----------+
+| booking_status | bookings |
++----------------+----------+
+| RAC            |     3989 |
+| CNF            |    38933 |
+| WL             |     4557 |
+| CAN            |     2521 |
++----------------+----------+
+4 rows in set (0.011 sec)
+
+--------------
+SHOW INDEX FROM railway_booking
+--------------
+
++-----------------+------------+----------+--------------+-------------+-----------+-------------+----------+--------+------+------------+---------+---------------+---------+------------+
+| Table           | Non_unique | Key_name | Seq_in_index | Column_name | Collation | Cardinality | Sub_part | Packed | Null | Index_type | Comment | Index_comment | Visible | Expression |
++-----------------+------------+----------+--------------+-------------+-----------+-------------+----------+--------+------+------------+---------+---------------+---------+------------+
+| railway_booking |          0 | PRIMARY  |            1 | booking_id  | A         |       49956 |     NULL |   NULL |      | BTREE      |         |               | YES     | NULL       |
++-----------------+------------+----------+--------------+-------------+-----------+-------------+----------+--------+------+------------+---------+---------------+---------+------------+
+1 row in set (0.000 sec)
+
+-- PART C : Benchmark helper - runs a query N times and stores avg time
+--------------
+CREATE TABLE benchmark (
+    query_no   VARCHAR(4),
+    query_desc VARCHAR(80),
+    phase      ENUM('BEFORE','AFTER'),
+    runs       INT,
+    avg_ms     DECIMAL(10,3),
+    PRIMARY KEY (query_no, phase)
+)
+--------------
+
+Query OK, 0 rows affected (0.002 sec)
+
+--------------
+CREATE PROCEDURE bench(IN p_no VARCHAR(4), IN p_desc VARCHAR(80), IN p_phase VARCHAR(6),
+                       IN p_sql TEXT, IN p_runs INT)
+BEGIN
+    DECLARE i INT DEFAULT 0;
+    DECLARE t0 DATETIME(6);
+    SET @bench_sql = p_sql;
+    PREPARE s FROM @bench_sql;
+    EXECUTE s;                                  -- warm-up run (loads pages into buffer pool)
+    SET t0 = NOW(6);
+    WHILE i < p_runs DO
+        EXECUTE s;
+        SET i = i + 1;
+    END WHILE;
+    REPLACE INTO benchmark VALUES (p_no, p_desc, p_phase, p_runs,
+        TIMESTAMPDIFF(MICROSECOND, t0, NOW(6)) / 1000 / p_runs);
+    DEALLOCATE PREPARE s;
+END
+--------------
+
+Query OK, 0 rows affected (0.000 sec)
+
+-- The 6 benchmark queries (each returns COUNT and SUM INTO variables so that
+-- the benchmark measures query time, not the time to print rows)
+--------------
+SET @q1 = "SELECT COUNT(*), SUM(fare) INTO @c, @s FROM railway_booking WHERE pnr = '4000485097'"
+--------------
+
+Query OK, 0 rows affected (0.000 sec)
+
+--------------
+SET @q2 = "SELECT COUNT(*), SUM(fare) INTO @c, @s FROM railway_booking WHERE train_no = 12951"
+--------------
+
+Query OK, 0 rows affected (0.000 sec)
+
+--------------
+SET @q3 = "SELECT COUNT(*), SUM(fare) INTO @c, @s FROM railway_booking WHERE train_no = 12951 AND journey_date = '2025-06-15'"
+--------------
+
+Query OK, 0 rows affected (0.000 sec)
+
+--------------
+SET @q4 = "SELECT COUNT(*), SUM(fare) INTO @c, @s FROM railway_booking WHERE source_stn = 'NDLS' AND dest_stn = 'MMCT' AND journey_date BETWEEN '2025-10-01' AND '2025-10-31'"
+--------------
+
+Query OK, 0 rows affected (0.000 sec)
+
+--------------
+SET @q5 = "SELECT COUNT(*), SUM(fare) INTO @c, @s FROM railway_booking WHERE journey_date = '2025-06-15' AND booking_status = 'WL'"
+--------------
+
+Query OK, 0 rows affected (0.000 sec)
+
+--------------
+SET @q6 = "SELECT COUNT(*), SUM(fare) INTO @c, @s FROM (SELECT fare FROM railway_booking WHERE train_no = 12627 ORDER BY booking_time DESC LIMIT 10) t"
+--------------
+
+Query OK, 0 rows affected (0.000 sec)
+
+-- PART D : BEFORE indexing - execution plans and timings
+-- Q1. Lookup by PNR
+--------------
+SELECT booking_id, pnr, passenger_name, train_no, journey_date, booking_status
+FROM railway_booking WHERE pnr = '4000485097'
+--------------
+
++------------+------------+-----------------+----------+--------------+----------------+
+| booking_id | pnr        | passenger_name  | train_no | journey_date | booking_status |
++------------+------------+-----------------+----------+--------------+----------------+
+|       5001 | 4000485097 | Ishaan Kulkarni |    12010 | 2025-07-12   | CNF            |
++------------+------------+-----------------+----------+--------------+----------------+
+1 row in set (0.009 sec)
+
+--------------
+EXPLAIN FORMAT=TRADITIONAL SELECT * FROM railway_booking WHERE pnr = '4000485097'
+--------------
+
++----+-------------+-----------------+------------+------+---------------+------+---------+------+-------+----------+-------------+
+| id | select_type | table           | partitions | type | possible_keys | key  | key_len | ref  | rows  | filtered | Extra       |
++----+-------------+-----------------+------------+------+---------------+------+---------+------+-------+----------+-------------+
+|  1 | SIMPLE      | railway_booking | NULL       | ALL  | NULL          | NULL | NULL    | NULL | 49956 |    10.00 | Using where |
++----+-------------+-----------------+------------+------+---------------+------+---------+------+-------+----------+-------------+
+1 row in set, 1 warning (0.000 sec)
+
+-- Q2. All bookings of one train
+--------------
+EXPLAIN FORMAT=TRADITIONAL SELECT * FROM railway_booking WHERE train_no = 12951
+--------------
+
++----+-------------+-----------------+------------+------+---------------+------+---------+------+-------+----------+-------------+
+| id | select_type | table           | partitions | type | possible_keys | key  | key_len | ref  | rows  | filtered | Extra       |
++----+-------------+-----------------+------------+------+---------------+------+---------+------+-------+----------+-------------+
+|  1 | SIMPLE      | railway_booking | NULL       | ALL  | NULL          | NULL | NULL    | NULL | 49956 |    10.00 | Using where |
++----+-------------+-----------------+------------+------+---------------+------+---------+------+-------+----------+-------------+
+1 row in set, 1 warning (0.000 sec)
+
+-- Q3. Train + journey date (chart preparation)
+--------------
+SELECT travel_class, COUNT(*) AS passengers
+FROM railway_booking WHERE train_no = 12951 AND journey_date = '2025-06-15'
+GROUP BY travel_class
+--------------
+
++--------------+------------+
+| travel_class | passengers |
++--------------+------------+
+| CC           |          2 |
+| SL           |          1 |
++--------------+------------+
+2 rows in set (0.006 sec)
+
+--------------
+EXPLAIN FORMAT=TRADITIONAL SELECT * FROM railway_booking WHERE train_no = 12951 AND journey_date = '2025-06-15'
+--------------
+
++----+-------------+-----------------+------------+------+---------------+------+---------+------+-------+----------+-------------+
+| id | select_type | table           | partitions | type | possible_keys | key  | key_len | ref  | rows  | filtered | Extra       |
++----+-------------+-----------------+------------+------+---------------+------+---------+------+-------+----------+-------------+
+|  1 | SIMPLE      | railway_booking | NULL       | ALL  | NULL          | NULL | NULL    | NULL | 49956 |     1.00 | Using where |
++----+-------------+-----------------+------------+------+---------------+------+---------+------+-------+----------+-------------+
+1 row in set, 1 warning (0.000 sec)
+
+-- Q4. Route search: source, destination and date range
+--------------
+EXPLAIN FORMAT=TRADITIONAL SELECT * FROM railway_booking
+WHERE source_stn = 'NDLS' AND dest_stn = 'MMCT' AND journey_date BETWEEN '2025-10-01' AND '2025-10-31'
+--------------
+
++----+-------------+-----------------+------------+------+---------------+------+---------+------+-------+----------+-------------+
+| id | select_type | table           | partitions | type | possible_keys | key  | key_len | ref  | rows  | filtered | Extra       |
++----+-------------+-----------------+------------+------+---------------+------+---------+------+-------+----------+-------------+
+|  1 | SIMPLE      | railway_booking | NULL       | ALL  | NULL          | NULL | NULL    | NULL | 49956 |     0.11 | Using where |
++----+-------------+-----------------+------------+------+---------------+------+---------+------+-------+----------+-------------+
+1 row in set, 1 warning (0.000 sec)
+
+-- Q5. Waiting-list passengers on a date
+--------------
+EXPLAIN FORMAT=TRADITIONAL SELECT * FROM railway_booking WHERE journey_date = '2025-06-15' AND booking_status = 'WL'
+--------------
+
++----+-------------+-----------------+------------+------+---------------+------+---------+------+-------+----------+-------------+
+| id | select_type | table           | partitions | type | possible_keys | key  | key_len | ref  | rows  | filtered | Extra       |
++----+-------------+-----------------+------------+------+---------------+------+---------+------+-------+----------+-------------+
+|  1 | SIMPLE      | railway_booking | NULL       | ALL  | NULL          | NULL | NULL    | NULL | 49956 |     2.50 | Using where |
++----+-------------+-----------------+------------+------+---------------+------+---------+------+-------+----------+-------------+
+1 row in set, 1 warning (0.000 sec)
+
+-- Q6. Latest 10 bookings of a train (ORDER BY + LIMIT)
+--------------
+EXPLAIN FORMAT=TRADITIONAL SELECT * FROM railway_booking WHERE train_no = 12627 ORDER BY booking_time DESC LIMIT 10
+--------------
+
++----+-------------+-----------------+------------+------+---------------+------+---------+------+-------+----------+-----------------------------+
+| id | select_type | table           | partitions | type | possible_keys | key  | key_len | ref  | rows  | filtered | Extra                       |
++----+-------------+-----------------+------------+------+---------------+------+---------+------+-------+----------+-----------------------------+
+|  1 | SIMPLE      | railway_booking | NULL       | ALL  | NULL          | NULL | NULL    | NULL | 49956 |    10.00 | Using where; Using filesort |
++----+-------------+-----------------+------------+------+---------------+------+---------+------+-------+----------+-----------------------------+
+1 row in set, 1 warning (0.000 sec)
+
+-- EXPLAIN ANALYZE shows the real work done for Q3 (full table scan)
+--------------
+EXPLAIN ANALYZE SELECT * FROM railway_booking WHERE train_no = 12951 AND journey_date = '2025-06-15'
+--------------
+
+EXPLAIN plan:
+-> Filter: ((railway_booking.journey_date = DATE'2025-06-15') and (railway_booking.train_no = 12951))  (cost=5068 rows=500) (actual time=1.07..14.9 rows=3 loops=1)
+    -> Table scan on railway_booking  (cost=5068 rows=49956) (actual time=0.0863..14 rows=50000 loops=1)
+1 row in set (0.015 sec)
+
+-- Handler counters: how many rows did InnoDB read for Q2?
+--------------
+FLUSH STATUS
+--------------
+
+Query OK, 0 rows affected (0.000 sec)
+
+--------------
+SELECT COUNT(*) FROM railway_booking WHERE train_no = 12951
+--------------
+
++----------+
+| COUNT(*) |
++----------+
+|     1256 |
++----------+
+1 row in set (0.004 sec)
+
+--------------
+SHOW SESSION STATUS WHERE Variable_name IN ('Handler_read_rnd_next','Handler_read_key','Handler_read_next')
+--------------
+
++-----------------------+-------+
+| Variable_name         | Value |
++-----------------------+-------+
+| Handler_read_key      | 1     |
+| Handler_read_next     | 0     |
+| Handler_read_rnd_next | 50001 |
++-----------------------+-------+
+3 rows in set (0.000 sec)
+
+--------------
+CALL bench('Q1', 'PNR lookup',                      'BEFORE', @q1, 20)
+--------------
+
+Query OK, 0 rows affected (0.132 sec)
+
+--------------
+CALL bench('Q2', 'train_no = ?',                    'BEFORE', @q2, 20)
+--------------
+
+Query OK, 0 rows affected (0.105 sec)
+
+--------------
+CALL bench('Q3', 'train_no = ? AND journey_date = ?','BEFORE', @q3, 20)
+--------------
+
+Query OK, 0 rows affected (0.115 sec)
+
+--------------
+CALL bench('Q4', 'source, dest, date range',        'BEFORE', @q4, 20)
+--------------
+
+Query OK, 0 rows affected (0.155 sec)
+
+--------------
+CALL bench('Q5', 'journey_date = ? AND status = WL','BEFORE', @q5, 20)
+--------------
+
+Query OK, 0 rows affected (0.123 sec)
+
+--------------
+CALL bench('Q6', 'train_no = ? ORDER BY time LIMIT','BEFORE', @q6, 20)
+--------------
+
+Query OK, 0 rows affected (0.130 sec)
+
+--------------
+SELECT * FROM benchmark WHERE phase = 'BEFORE'
+--------------
+
++----------+-----------------------------------+--------+------+--------+
+| query_no | query_desc                        | phase  | runs | avg_ms |
++----------+-----------------------------------+--------+------+--------+
+| Q1       | PNR lookup                        | BEFORE |   20 |  6.253 |
+| Q2       | train_no = ?                      | BEFORE |   20 |  4.991 |
+| Q3       | train_no = ? AND journey_date = ? | BEFORE |   20 |  5.457 |
+| Q4       | source, dest, date range          | BEFORE |   20 |  7.351 |
+| Q5       | journey_date = ? AND status = WL  | BEFORE |   20 |  5.852 |
+| Q6       | train_no = ? ORDER BY time LIMIT  | BEFORE |   20 |  6.175 |
++----------+-----------------------------------+--------+------+--------+
+6 rows in set (0.000 sec)
+
+-- PART E : Create single-column and composite indexes
+-- single-column indexes
+--------------
+CREATE UNIQUE INDEX idx_pnr      ON railway_booking (pnr)
+--------------
+
+Query OK, 0 rows affected (0.047 sec)
+Records: 0  Duplicates: 0  Warnings: 0
+
+--------------
+CREATE INDEX        idx_train_no ON railway_booking (train_no)
+--------------
+
+Query OK, 0 rows affected (0.039 sec)
+Records: 0  Duplicates: 0  Warnings: 0
+
+-- composite indexes
+--------------
+CREATE INDEX idx_train_date      ON railway_booking (train_no, journey_date)
+--------------
+
+Query OK, 0 rows affected (0.047 sec)
+Records: 0  Duplicates: 0  Warnings: 0
+
+--------------
+CREATE INDEX idx_route_date      ON railway_booking (source_stn, dest_stn, journey_date)
+--------------
+
+Query OK, 0 rows affected (0.071 sec)
+Records: 0  Duplicates: 0  Warnings: 0
+
+--------------
+CREATE INDEX idx_date_status     ON railway_booking (journey_date, booking_status)
+--------------
+
+Query OK, 0 rows affected (0.046 sec)
+Records: 0  Duplicates: 0  Warnings: 0
+
+--------------
+CREATE INDEX idx_train_btime     ON railway_booking (train_no, booking_time)
+--------------
+
+Query OK, 0 rows affected (0.045 sec)
+Records: 0  Duplicates: 0  Warnings: 0
+
+--------------
+ANALYZE TABLE railway_booking
+--------------
+
++----------------------------+---------+----------+----------+
+| Table                      | Op      | Msg_type | Msg_text |
++----------------------------+---------+----------+----------+
+| railway_db.railway_booking | analyze | status   | OK       |
++----------------------------+---------+----------+----------+
+1 row in set (0.014 sec)
+
+--------------
+SELECT INDEX_NAME, GROUP_CONCAT(COLUMN_NAME ORDER BY SEQ_IN_INDEX) AS columns_in_order,
+       IF(NON_UNIQUE = 0, 'UNIQUE', 'NON-UNIQUE') AS uniqueness
+FROM information_schema.STATISTICS
+WHERE TABLE_SCHEMA = 'railway_db' AND TABLE_NAME = 'railway_booking'
+GROUP BY INDEX_NAME, NON_UNIQUE
+--------------
+
++-----------------+----------------------------------+------------+
+| INDEX_NAME      | columns_in_order                 | uniqueness |
++-----------------+----------------------------------+------------+
+| idx_date_status | journey_date,booking_status      | NON-UNIQUE |
+| idx_pnr         | pnr                              | UNIQUE     |
+| idx_route_date  | source_stn,dest_stn,journey_date | NON-UNIQUE |
+| idx_train_btime | train_no,booking_time            | NON-UNIQUE |
+| idx_train_date  | train_no,journey_date            | NON-UNIQUE |
+| idx_train_no    | train_no                         | NON-UNIQUE |
+| PRIMARY         | booking_id                       | UNIQUE     |
++-----------------+----------------------------------+------------+
+7 rows in set (0.000 sec)
+
+-- Space used by the indexes
+--------------
+SELECT index_name, ROUND(stat_value * @@innodb_page_size / 1024, 0) AS size_kb
+FROM mysql.innodb_index_stats
+WHERE database_name = 'railway_db' AND table_name = 'railway_booking' AND stat_name = 'size'
+--------------
+
++-----------------+---------+
+| index_name      | size_kb |
++-----------------+---------+
+| PRIMARY         |    4624 |
+| idx_date_status |    1552 |
+| idx_pnr         |    1552 |
+| idx_route_date  |    1552 |
+| idx_train_btime |    1552 |
+| idx_train_date  |    1552 |
+| idx_train_no    |    1552 |
++-----------------+---------+
+7 rows in set (0.000 sec)
+
+-- PART F : AFTER indexing - execution plans and timings
+--------------
+EXPLAIN FORMAT=TRADITIONAL SELECT * FROM railway_booking WHERE pnr = '4000485097'
+--------------
+
++----+-------------+-----------------+------------+-------+---------------+---------+---------+-------+------+----------+-------+
+| id | select_type | table           | partitions | type  | possible_keys | key     | key_len | ref   | rows | filtered | Extra |
++----+-------------+-----------------+------------+-------+---------------+---------+---------+-------+------+----------+-------+
+|  1 | SIMPLE      | railway_booking | NULL       | const | idx_pnr       | idx_pnr | 40      | const |    1 |   100.00 | NULL  |
++----+-------------+-----------------+------------+-------+---------------+---------+---------+-------+------+----------+-------+
+1 row in set, 1 warning (0.000 sec)
+
+--------------
+EXPLAIN FORMAT=TRADITIONAL SELECT * FROM railway_booking WHERE train_no = 12951
+--------------
+
++----+-------------+-----------------+------------+------+---------------------------------------------+--------------+---------+-------+------+----------+-------+
+| id | select_type | table           | partitions | type | possible_keys                               | key          | key_len | ref   | rows | filtered | Extra |
++----+-------------+-----------------+------------+------+---------------------------------------------+--------------+---------+-------+------+----------+-------+
+|  1 | SIMPLE      | railway_booking | NULL       | ref  | idx_train_no,idx_train_date,idx_train_btime | idx_train_no | 4       | const | 1256 |   100.00 | NULL  |
++----+-------------+-----------------+------------+------+---------------------------------------------+--------------+---------+-------+------+----------+-------+
+1 row in set, 1 warning (0.000 sec)
+
+--------------
+EXPLAIN FORMAT=TRADITIONAL SELECT * FROM railway_booking WHERE train_no = 12951 AND journey_date = '2025-06-15'
+--------------
+
++----+-------------+-----------------+------------+------+-------------------------------------------------------------+----------------+---------+-------------+------+----------+-------+
+| id | select_type | table           | partitions | type | possible_keys                                               | key            | key_len | ref         | rows | filtered | Extra |
++----+-------------+-----------------+------------+------+-------------------------------------------------------------+----------------+---------+-------------+------+----------+-------+
+|  1 | SIMPLE      | railway_booking | NULL       | ref  | idx_train_no,idx_train_date,idx_date_status,idx_train_btime | idx_train_date | 7       | const,const |    3 |   100.00 | NULL  |
++----+-------------+-----------------+------------+------+-------------------------------------------------------------+----------------+---------+-------------+------+----------+-------+
+1 row in set, 1 warning (0.000 sec)
+
+--------------
+EXPLAIN FORMAT=TRADITIONAL SELECT * FROM railway_booking
+WHERE source_stn = 'NDLS' AND dest_stn = 'MMCT' AND journey_date BETWEEN '2025-10-01' AND '2025-10-31'
+--------------
+
++----+-------------+-----------------+------------+-------+--------------------------------+----------------+---------+------+------+----------+-----------------------+
+| id | select_type | table           | partitions | type  | possible_keys                  | key            | key_len | ref  | rows | filtered | Extra                 |
++----+-------------+-----------------+------------+-------+--------------------------------+----------------+---------+------+------+----------+-----------------------+
+|  1 | SIMPLE      | railway_booking | NULL       | range | idx_route_date,idx_date_status | idx_route_date | 35      | NULL |  100 |   100.00 | Using index condition |
++----+-------------+-----------------+------------+-------+--------------------------------+----------------+---------+------+------+----------+-----------------------+
+1 row in set, 1 warning (0.000 sec)
+
+--------------
+EXPLAIN FORMAT=TRADITIONAL SELECT * FROM railway_booking WHERE journey_date = '2025-06-15' AND booking_status = 'WL'
+--------------
+
++----+-------------+-----------------+------------+------+-----------------+-----------------+---------+-------------+------+----------+-----------------------+
+| id | select_type | table           | partitions | type | possible_keys   | key             | key_len | ref         | rows | filtered | Extra                 |
++----+-------------+-----------------+------------+------+-----------------+-----------------+---------+-------------+------+----------+-----------------------+
+|  1 | SIMPLE      | railway_booking | NULL       | ref  | idx_date_status | idx_date_status | 4       | const,const |   14 |   100.00 | Using index condition |
++----+-------------+-----------------+------------+------+-----------------+-----------------+---------+-------------+------+----------+-----------------------+
+1 row in set, 1 warning (0.000 sec)
+
+--------------
+EXPLAIN FORMAT=TRADITIONAL SELECT * FROM railway_booking WHERE train_no = 12627 ORDER BY booking_time DESC LIMIT 10
+--------------
+
++----+-------------+-----------------+------------+------+---------------------------------------------+-----------------+---------+-------+------+----------+---------------------+
+| id | select_type | table           | partitions | type | possible_keys                               | key             | key_len | ref   | rows | filtered | Extra               |
++----+-------------+-----------------+------------+------+---------------------------------------------+-----------------+---------+-------+------+----------+---------------------+
+|  1 | SIMPLE      | railway_booking | NULL       | ref  | idx_train_no,idx_train_date,idx_train_btime | idx_train_btime | 4       | const | 1250 |   100.00 | Backward index scan |
++----+-------------+-----------------+------------+------+---------------------------------------------+-----------------+---------+-------+------+----------+---------------------+
+1 row in set, 1 warning (0.000 sec)
+
+--------------
+EXPLAIN ANALYZE SELECT * FROM railway_booking WHERE train_no = 12951 AND journey_date = '2025-06-15'
+--------------
+
+EXPLAIN plan:
+-> Index lookup on railway_booking using idx_train_date (train_no = 12951, journey_date = DATE'2025-06-15')  (cost=1.05 rows=3) (actual time=0.00633..0.00704 rows=3 loops=1)
+1 row in set (0.000 sec)
+
+--------------
+FLUSH STATUS
+--------------
+
+Query OK, 0 rows affected (0.000 sec)
+
+--------------
+SELECT COUNT(*) FROM railway_booking WHERE train_no = 12951
+--------------
+
++----------+
+| COUNT(*) |
++----------+
+|     1256 |
++----------+
+1 row in set (0.000 sec)
+
+--------------
+SHOW SESSION STATUS WHERE Variable_name IN ('Handler_read_rnd_next','Handler_read_key','Handler_read_next')
+--------------
+
++-----------------------+-------+
+| Variable_name         | Value |
++-----------------------+-------+
+| Handler_read_key      | 1     |
+| Handler_read_next     | 1256  |
+| Handler_read_rnd_next | 0     |
++-----------------------+-------+
+3 rows in set (0.000 sec)
+
+--------------
+CALL bench('Q1', 'PNR lookup',                      'AFTER', @q1, 20)
+--------------
+
+Query OK, 0 rows affected (0.000 sec)
+
+--------------
+CALL bench('Q2', 'train_no = ?',                    'AFTER', @q2, 20)
+--------------
+
+Query OK, 0 rows affected (0.013 sec)
+
+--------------
+CALL bench('Q3', 'train_no = ? AND journey_date = ?','AFTER', @q3, 20)
+--------------
+
+Query OK, 0 rows affected (0.001 sec)
+
+--------------
+CALL bench('Q4', 'source, dest, date range',        'AFTER', @q4, 20)
+--------------
+
+Query OK, 0 rows affected (0.002 sec)
+
+--------------
+CALL bench('Q5', 'journey_date = ? AND status = WL','AFTER', @q5, 20)
+--------------
+
+Query OK, 0 rows affected (0.001 sec)
+
+--------------
+CALL bench('Q6', 'train_no = ? ORDER BY time LIMIT','AFTER', @q6, 20)
+--------------
+
+Query OK, 0 rows affected (0.002 sec)
+
+-- PART G : Comparison
+--------------
+SELECT b.query_no, b.query_desc,
+       b.avg_ms AS before_ms, a.avg_ms AS after_ms,
+       ROUND(b.avg_ms / NULLIF(a.avg_ms, 0), 1) AS speedup_x
+FROM benchmark b
+JOIN benchmark a ON a.query_no = b.query_no AND a.phase = 'AFTER'
+WHERE b.phase = 'BEFORE'
+ORDER BY b.query_no
+--------------
+
++----------+-----------------------------------+-----------+----------+-----------+
+| query_no | query_desc                        | before_ms | after_ms | speedup_x |
++----------+-----------------------------------+-----------+----------+-----------+
+| Q1       | PNR lookup                        |     6.253 |    0.007 |     893.3 |
+| Q2       | train_no = ?                      |     4.991 |    0.590 |       8.5 |
+| Q3       | train_no = ? AND journey_date = ? |     5.457 |    0.016 |     341.1 |
+| Q4       | source, dest, date range          |     7.351 |    0.088 |      83.5 |
+| Q5       | journey_date = ? AND status = WL  |     5.852 |    0.016 |     365.8 |
+| Q6       | train_no = ? ORDER BY time LIMIT  |     6.175 |    0.071 |      87.0 |
++----------+-----------------------------------+-----------+----------+-----------+
+6 rows in set (0.000 sec)
+
+-- PART H : Composite index rules (leftmost prefix)
+-- H1. Uses idx_route_date: leftmost column source_stn is present
+--------------
+EXPLAIN FORMAT=TRADITIONAL SELECT * FROM railway_booking WHERE source_stn = 'NDLS'
+--------------
+
++----+-------------+-----------------+------------+------+----------------+----------------+---------+-------+-------+----------+-----------------------+
+| id | select_type | table           | partitions | type | possible_keys  | key            | key_len | ref   | rows  | filtered | Extra                 |
++----+-------------+-----------------+------------+------+----------------+----------------+---------+-------+-------+----------+-----------------------+
+|  1 | SIMPLE      | railway_booking | NULL       | ref  | idx_route_date | idx_route_date | 16      | const | 22908 |   100.00 | Using index condition |
++----+-------------+-----------------+------------+------+----------------+----------------+---------+-------+-------+----------+-----------------------+
+1 row in set, 1 warning (0.000 sec)
+
+-- H2. Cannot use idx_route_date: leftmost column missing -> full scan
+--------------
+EXPLAIN FORMAT=TRADITIONAL SELECT * FROM railway_booking WHERE dest_stn = 'MMCT'
+--------------
+
++----+-------------+-----------------+------------+------+---------------+------+---------+------+-------+----------+-------------+
+| id | select_type | table           | partitions | type | possible_keys | key  | key_len | ref  | rows  | filtered | Extra       |
++----+-------------+-----------------+------------+------+---------------+------+---------+------+-------+----------+-------------+
+|  1 | SIMPLE      | railway_booking | NULL       | ALL  | NULL          | NULL | NULL    | NULL | 49956 |    10.00 | Using where |
++----+-------------+-----------------+------------+------+---------------+------+---------+------+-------+----------+-------------+
+1 row in set, 1 warning (0.000 sec)
+
+-- H3. Covering index: all needed columns are inside idx_train_date -> "Using index"
+--------------
+EXPLAIN FORMAT=TRADITIONAL SELECT train_no, journey_date FROM railway_booking WHERE train_no = 12951
+--------------
+
++----+-------------+-----------------+------------+------+---------------------------------------------+----------------+---------+-------+------+----------+-------------+
+| id | select_type | table           | partitions | type | possible_keys                               | key            | key_len | ref   | rows | filtered | Extra       |
++----+-------------+-----------------+------------+------+---------------------------------------------+----------------+---------+-------+------+----------+-------------+
+|  1 | SIMPLE      | railway_booking | NULL       | ref  | idx_train_no,idx_train_date,idx_train_btime | idx_train_date | 4       | const | 1256 |   100.00 | Using index |
++----+-------------+-----------------+------------+------+---------------------------------------------+----------------+---------+-------+------+----------+-------------+
+1 row in set, 1 warning (0.000 sec)
+
+-- H4. Index forced off for comparison
+--------------
+EXPLAIN FORMAT=TRADITIONAL SELECT * FROM railway_booking IGNORE INDEX (idx_train_date, idx_train_no, idx_train_btime, idx_date_status)
+WHERE train_no = 12951 AND journey_date = '2025-06-15'
+--------------
+
++----+-------------+-----------------+------------+------+---------------+------+---------+------+-------+----------+-------------+
+| id | select_type | table           | partitions | type | possible_keys | key  | key_len | ref  | rows  | filtered | Extra       |
++----+-------------+-----------------+------------+------+---------------+------+---------+------+-------+----------+-------------+
+|  1 | SIMPLE      | railway_booking | NULL       | ALL  | NULL          | NULL | NULL    | NULL | 49956 |     0.01 | Using where |
++----+-------------+-----------------+------------+------+---------------+------+---------+------+-------+----------+-------------+
+1 row in set, 1 warning (0.000 sec)
+
+-- H5. A function on the indexed column prevents index use
+--------------
+EXPLAIN FORMAT=TRADITIONAL SELECT * FROM railway_booking WHERE MONTH(journey_date) = 6 AND YEAR(journey_date) = 2025 AND booking_status = 'WL'
+--------------
+
++----+-------------+-----------------+------------+------+---------------+------+---------+------+-------+----------+-------------+
+| id | select_type | table           | partitions | type | possible_keys | key  | key_len | ref  | rows  | filtered | Extra       |
++----+-------------+-----------------+------------+------+---------------+------+---------+------+-------+----------+-------------+
+|  1 | SIMPLE      | railway_booking | NULL       | ALL  | NULL          | NULL | NULL    | NULL | 49956 |    25.00 | Using where |
++----+-------------+-----------------+------------+------+---------------+------+---------+------+-------+----------+-------------+
+1 row in set, 1 warning (0.000 sec)
+```
+
+## Observations
+
+* **Before indexing**, every query was a full table scan: `type = ALL` over about 50,000 rows, and `Handler_read_rnd_next = 50,001`.
+* **After indexing:**
+  * the PNR lookup became `const` (one row, through the UNIQUE index);
+  * the train and date queries became `ref` / `range`;
+  * Q2 read only the 1,256 matching index entries (`Handler_read_next`) instead of 50,001 rows;
+  * Q6 no longer needs `Using filesort`, because `idx_train_btime` already returns the rows in `booking_time` order.
+* The **highly selective** queries (Q1, Q3, Q5) gained the most, roughly 300-900x. Q2 gained the least (about 8.5x) because it still visits 1,256 rows and must fetch `fare` from the table for each of them.
+* The **leftmost-prefix rule** was confirmed: `source_stn` alone can use `idx_route_date`, but `dest_stn` alone gives a full scan.
+* `MONTH(journey_date) = 6` cannot use `idx_date_status` (full scan), because a function on the column hides it from the index.
+* Selecting only indexed columns gives a **covering index** (`Using index`).
+* The indexes take extra space (see the size table), which is the price paid for faster reads.
+
+## Result
+
+The railway booking table with 50,000 rows was tested before and after indexing. After creating the single and composite indexes, every query changed from a full table scan to an index scan. The queries became about 8 to 890 times faster.
+
+## Conclusion
+
+Indexes make search queries much faster on big tables. A composite index should follow the columns in the WHERE and ORDER BY of the query (leftmost prefix rule). Indexes also take extra space and slow down inserts and updates, so they should be made only for queries that are used often.
