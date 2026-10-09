@@ -1,6 +1,6 @@
 # RDBMS Practical File
 
-**Chandigarh University** - Department of Computer Science and Engineering
+**Chandigarh University X bytexl** - Department of Computer Science and Engineering
 
 | | |
 |---|---|
