@@ -1,5 +1,9 @@
 # Experiment 2 - ER Diagram to Relational Schema (MySQL)
 
+| Name | UID No | Course | Subject | Submitted To |
+|---|---|---|---|---|
+| Aditya Sharma | 25LBCS3150 | B.Tech CSE (AI/ML-2) | RDBMS (25CSH-210) | Mr. Amit Kumar Sir |
+
 ## Aim
 
 Convert the ER diagram of Experiment 1 into a relational schema. Write complete MySQL `CREATE TABLE` statements with **PRIMARY KEY, FOREIGN KEY, NOT NULL, UNIQUE, ON DELETE CASCADE and ON DELETE SET NULL** constraints, insert sample data, and demonstrate referential-integrity violations.

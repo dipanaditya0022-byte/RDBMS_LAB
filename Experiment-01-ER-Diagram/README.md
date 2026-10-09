@@ -1,5 +1,9 @@
 # Experiment 1 - ER Diagram for an Indian E-commerce Platform
 
+| Name | UID No | Course | Subject | Submitted To |
+|---|---|---|---|---|
+| Aditya Sharma | 25LBCS3150 | B.Tech CSE (AI/ML-2) | RDBMS (25CSH-210) | Mr. Amit Kumar Sir |
+
 ## Aim
 
 Design an Entity-Relationship (ER) diagram for an Indian e-commerce platform with the entities **Customer, Product, Order, OrderItem, Seller, Category, Payment, Delivery and Address**. Show the primary keys, composite and multi-valued attributes, weak entities, the specialization of Product, and participation constraints.

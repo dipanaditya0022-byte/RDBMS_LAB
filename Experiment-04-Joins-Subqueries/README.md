@@ -1,5 +1,9 @@
 # Experiment 4 - Joins, Subqueries, EXISTS, Simulated INTERSECT / EXCEPT and EXPLAIN
 
+| Name | UID No | Course | Subject | Submitted To |
+|---|---|---|---|---|
+| Aditya Sharma | 25LBCS3150 | B.Tech CSE (AI/ML-2) | RDBMS (25CSH-210) | Mr. Amit Kumar Sir |
+
 ## Aim
 
 Using the Employee schema, write queries with **INNER JOIN, LEFT JOIN, self join, 3-way join, correlated subqueries, EXISTS, and simulated INTERSECT and EXCEPT**, and compare their execution plans using `EXPLAIN`.

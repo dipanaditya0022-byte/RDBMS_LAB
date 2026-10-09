@@ -1,5 +1,9 @@
 # Experiment 6 - Stored Procedure with Error Handling, and Triggers for Validation and Audit
 
+| Name | UID No | Course | Subject | Submitted To |
+|---|---|---|---|---|
+| Aditya Sharma | 25LBCS3150 | B.Tech CSE (AI/ML-2) | RDBMS (25CSH-210) | Mr. Amit Kumar Sir |
+
 ## Aim
 
 Create a stored procedure **`transfer_employee(emp_id, new_dept_id)`** with validation and error handling. Implement **triggers** for salary validation and audit logging, and test the edge cases.

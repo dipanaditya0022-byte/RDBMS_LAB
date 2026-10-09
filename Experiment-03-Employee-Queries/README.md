@@ -1,5 +1,9 @@
 # Experiment 3 - Employee-Department-Project Schema and Basic SQL Queries
 
+| Name | UID No | Course | Subject | Submitted To |
+|---|---|---|---|---|
+| Aditya Sharma | 25LBCS3150 | B.Tech CSE (AI/ML-2) | RDBMS (25CSH-210) | Mr. Amit Kumar Sir |
+
 ## Aim
 
 Create an Employee-Department-Project schema and insert at least 30 employees across 5 departments and 8 projects. Write SQL queries that demonstrate **selection, projection, aggregate functions, GROUP BY, HAVING, CASE expressions and ORDER BY**.

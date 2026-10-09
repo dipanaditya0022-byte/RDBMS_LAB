@@ -1,5 +1,9 @@
 # Experiment 10 - Query Optimization: Slow Queries, EXPLAIN, Indexing and Query Rewriting
 
+| Name | UID No | Course | Subject | Submitted To |
+|---|---|---|---|---|
+| Aditya Sharma | 25LBCS3150 | B.Tech CSE (AI/ML-2) | RDBMS (25CSH-210) | Mr. Amit Kumar Sir |
+
 ## Aim
 
 Generate a dataset with at least 10,000 rows (1,20,000 rows are used here). Write **five slow queries**, analyze them with `EXPLAIN`, optimize them using **indexing and query rewriting**, and compare the execution times before and after optimization.

@@ -1,5 +1,9 @@
 # Experiment 7 - Functional Dependencies and Normalization (UNF -> 1NF -> 2NF -> 3NF -> BCNF)
 
+| Name | UID No | Course | Subject | Submitted To |
+|---|---|---|---|---|
+| Aditya Sharma | 25LBCS3150 | B.Tech CSE (AI/ML-2) | RDBMS (25CSH-210) | Mr. Amit Kumar Sir |
+
 ## Aim
 
 Given a denormalized **Sales** table, identify its functional dependencies and normalize it step by step from **UNF to 1NF, 2NF, 3NF and BCNF**. Verify the **lossless-join** and **dependency-preservation** properties using SQL queries.

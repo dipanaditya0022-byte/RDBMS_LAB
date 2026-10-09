@@ -1,6 +1,17 @@
-# RDBMS Lab
+# RDBMS Practical File
 
-DBMS lab experiments 1 to 10, done in MySQL.
+**Chandigarh University** - Department of Computer Science and Engineering
+
+| | |
+|---|---|
+| **Subject** | RDBMS (25CSH-210) |
+| **Session** | 2026-2027 |
+| **Submitted By** | Aditya Sharma |
+| **UID No** | 25LBCS3150 |
+| **Course** | B.Tech CSE (AI/ML-2) |
+| **Submitted To** | Mr. Amit Kumar Sir |
+
+This repository has my RDBMS lab experiments 1 to 10, done in MySQL.
 
 Each experiment has its own folder with:
 - the SQL source code (`.sql` file);
@@ -13,16 +24,16 @@ Experiment 1 is the ER diagram, so it has the diagram image instead of SQL.
 
 | No. | Experiment | Folder |
 |:---:|---|---|
-| 1 | ER diagram for an Indian e-commerce platform | [Experiment-01-ER-Diagram](Experiment-01-ER-Diagram/) |
-| 2 | ER diagram to relational schema, constraints and referential integrity | [Experiment-02-Relational-Schema](Experiment-02-Relational-Schema/) |
-| 3 | Employee-Department-Project schema, basic SQL queries | [Experiment-03-Employee-Queries](Experiment-03-Employee-Queries/) |
-| 4 | Joins, subqueries, EXISTS, INTERSECT / EXCEPT, EXPLAIN | [Experiment-04-Joins-Subqueries](Experiment-04-Joins-Subqueries/) |
-| 5 | Views and recursive CTE | [Experiment-05-Views-Recursive-CTE](Experiment-05-Views-Recursive-CTE/) |
-| 6 | Stored procedure and triggers | [Experiment-06-Procedures-Triggers](Experiment-06-Procedures-Triggers/) |
-| 7 | Normalization (UNF to BCNF) | [Experiment-07-Normalization](Experiment-07-Normalization/) |
-| 8 | Transactions and concurrency | [Experiment-08-Transactions-Concurrency](Experiment-08-Transactions-Concurrency/) |
-| 9 | Railway booking - indexing benchmark | [Experiment-09-Indexing-Benchmark](Experiment-09-Indexing-Benchmark/) |
-| 10 | Query optimization | [Experiment-10-Query-Optimization](Experiment-10-Query-Optimization/) |
+| 1 | Design an ER diagram for an Indian e-commerce platform. | [Experiment-01-ER-Diagram](Experiment-01-ER-Diagram/) |
+| 2 | Convert the ER diagram into a relational schema using MySQL constraints and demonstrate referential integrity violations. | [Experiment-02-Relational-Schema](Experiment-02-Relational-Schema/) |
+| 3 | Create an Employee-Department-Project schema and write SQL queries using aggregates, GROUP BY and HAVING. | [Experiment-03-Employee-Queries](Experiment-03-Employee-Queries/) |
+| 4 | Write queries using joins, correlated subqueries and EXISTS, and compare execution plans using EXPLAIN. | [Experiment-04-Joins-Subqueries](Experiment-04-Joins-Subqueries/) |
+| 5 | Create SQL views, test their updatability and implement a recursive CTE for reporting chains. | [Experiment-05-Views-Recursive-CTE](Experiment-05-Views-Recursive-CTE/) |
+| 6 | Create a stored procedure transfer_employee and triggers for salary validation and audit logging. | [Experiment-06-Procedures-Triggers](Experiment-06-Procedures-Triggers/) |
+| 7 | Normalize a denormalized Sales table from UNF to 3NF and BCNF. | [Experiment-07-Normalization](Experiment-07-Normalization/) |
+| 8 | Implement banking transactions using COMMIT, ROLLBACK and SAVEPOINT and demonstrate isolation levels. | [Experiment-08-Transactions-Concurrency](Experiment-08-Transactions-Concurrency/) |
+| 9 | Benchmark query performance on a Railway Booking table before and after indexing. | [Experiment-09-Indexing-Benchmark](Experiment-09-Indexing-Benchmark/) |
+| 10 | Analyze and optimize five slow queries using EXPLAIN, indexing and query rewriting. | [Experiment-10-Query-Optimization](Experiment-10-Query-Optimization/) |
 
 ## Software Used
 
