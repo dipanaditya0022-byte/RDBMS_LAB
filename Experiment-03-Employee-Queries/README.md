@@ -2,7 +2,7 @@
 
 | Name | UID No | Course | Subject | Submitted To |
 |---|---|---|---|---|
-| Aditya Sharma | 25LBCS3150 | B.Tech CSE (AI/ML-2) | RDBMS (25CSH-210) | Mr. Amit Kumar Sir |
+| Aditya Sharma | 25LBCS3150 | B.Tech CSE (AI/ML-2) | RDBMS (25CSH-210) | Mr. Amit Kumar Sir, Mr. Ilapanda Pavan Kumar Sir |
 
 ## Aim
 

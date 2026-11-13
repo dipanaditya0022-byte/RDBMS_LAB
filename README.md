@@ -9,7 +9,7 @@
 | **Submitted By** | Aditya Sharma |
 | **UID No** | 25LBCS3150 |
 | **Course** | B.Tech CSE (AI/ML-2) |
-| **Submitted To** | Mr. Amit Kumar Sir |
+| **Submitted To** | Mr. Amit Kumar Sir<br>Mr. Ilapanda Pavan Kumar Sir |
 
 This repository has my RDBMS lab experiments 1 to 10, done in MySQL.
 
