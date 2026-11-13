@@ -35,6 +35,18 @@ Experiment 1 is the ER diagram, so it has the diagram image instead of SQL.
 | 9 | Benchmark query performance on a Railway Booking table before and after indexing. | [Experiment-09-Indexing-Benchmark](Experiment-09-Indexing-Benchmark/) |
 | 10 | Analyze and optimize five slow queries using EXPLAIN, indexing and query rewriting. | [Experiment-10-Query-Optimization](Experiment-10-Query-Optimization/) |
 
+## SQL Certificates (HackerRank)
+
+I also completed the HackerRank SQL skill certifications (Basic, Intermediate and Advanced).
+
+![SQL Certificates](Certificates/SQL_Certificates.png)
+
+| Certificate | Earned On | Certificate ID | PDF | Verify |
+|---|---|---|---|---|
+| SQL (Basic) | 12 Nov 2026 | 6CD1901CF516 | [View PDF](Certificates/SQL_Basic_Certificate.pdf) | [Verify on HackerRank](https://www.hackerrank.com/certificates/6cd1901cf516) |
+| SQL (Intermediate) | 12 Nov 2026 | 309474A62AAF | [View PDF](Certificates/SQL_Intermediate_Certificate.pdf) | [Verify on HackerRank](https://www.hackerrank.com/certificates/309474a62aaf) |
+| SQL (Advanced) | 12 Nov 2026 | 7EC81E815BF3 | [View PDF](Certificates/SQL_Advanced_Certificate.pdf) | [Verify on HackerRank](https://www.hackerrank.com/certificates/7ec81e815bf3) |
+
 ## Software Used
 
 - MySQL Server 8.0 (InnoDB)
