@@ -39,6 +39,8 @@ Experiment 1 is the ER diagram, so it has the diagram image instead of SQL.
 
 I also completed the HackerRank SQL skill certifications (Basic, Intermediate and Advanced).
 
+LinkedIn post: [View on LinkedIn](https://lnkd.in/p/gKfwpREj)
+
 ![SQL Certificates](Certificates/SQL_Certificates.png)
 
 | Certificate | Earned On | Certificate ID | PDF | Verify |
