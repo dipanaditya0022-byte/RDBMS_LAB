@@ -49,6 +49,16 @@ LinkedIn post: [View on LinkedIn](https://lnkd.in/p/gKfwpREj)
 | SQL (Intermediate) | 12 Nov 2026 | 309474A62AAF | [View PDF](Certificates/SQL_Intermediate_Certificate.pdf) | [Verify on HackerRank](https://www.hackerrank.com/certificates/309474a62aaf) |
 | SQL (Advanced) | 12 Nov 2026 | 7EC81E815BF3 | [View PDF](Certificates/SQL_Advanced_Certificate.pdf) | [Verify on HackerRank](https://www.hackerrank.com/certificates/7ec81e815bf3) |
 
+## SQL Developer Certificate (Infosys Springboard)
+
+I also completed the SQL Developer course on Infosys Springboard.
+
+![SQL Developer Certificate](Certificates/SQL_Developer_Infosys_Springboard.png)
+
+| Certificate | Issued By | Completed On | Issued On | PDF | Verify |
+|---|---|---|---|---|---|
+| SQL Developer | Infosys Springboard | 18 Nov 2026 | 22 Nov 2026 | [View PDF](Certificates/SQL_Developer_Infosys_Springboard.pdf) | Scan the QR code on the certificate at [verify.onwingspan.com](https://verify.onwingspan.com) |
+
 ## Software Used
 
 - MySQL Server 8.0 (InnoDB)
